@@ -202,7 +202,8 @@ html, body, #root {
   border-color: rgba(56, 189, 248, 0.5);
 }
 
-.prompt-button {
+.prompt-button,
+.asset-status-toggle {
   background: linear-gradient(135deg, #38bdf8, #60a5fa);
   color: #050810;
   border: none;
@@ -217,12 +218,14 @@ html, body, #root {
   transition: transform 0.2s ease, opacity 0.2s ease, box-shadow 0.2s ease;
 }
 
-.prompt-button:hover:not(:disabled) {
+.prompt-button:hover:not(:disabled),
+.asset-status-toggle:hover:not(:disabled) {
   transform: translateY(-1px);
   box-shadow: 0 22px 36px rgba(56, 189, 248, 0.22);
 }
 
-.prompt-button:disabled {
+.prompt-button:disabled,
+.asset-status-toggle:disabled {
   opacity: 0.4;
   cursor: default;
 }
@@ -310,6 +313,37 @@ html, body, #root {
 
 @keyframes spin {
   to { transform: rotate(360deg); }
+}
+
+.asset-status-bar,
+.asset-status-hidden {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 14px;
+  border-radius: 16px;
+  background: rgba(15, 23, 42, 0.5);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  color: rgba(226, 232, 240, 0.85);
+}
+
+.asset-status-chip {
+  padding: 8px 12px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.05);
+  color: rgba(226, 232, 240, 0.75);
+  font-size: 11px;
+}
+
+.asset-status-chip--active {
+  background: rgba(56, 189, 248, 0.16);
+  color: #e0f2fe;
+}
+
+.asset-status-toggle {
+  margin-left: auto;
+  padding: 8px 14px;
+  font-size: 11px;
 }
 
 .research-panel {

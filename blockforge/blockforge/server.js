@@ -39,9 +39,131 @@ if (!mistralApiKey && !proxyUrl) {
 }
 
 const client = mistralApiKey ? new Mistral({ apiKey: mistralApiKey }) : null;
+const API_USER_AGENT = process.env.API_USER_AGENT ?? 'BlockForge/1.0 (+https://github.com/yusufsamodien12-hub/Blockforge)';
+const ambientCGApiUrl = process.env.AMBIENTCG_API_URL ?? 'https://ambientcg.com/api/v1';
 
 app.use(cors());
 app.use(express.json({ limit: '10mb' }));
+
+function normalizePolyHavenAsset(id, asset) {
+  return {
+    source: 'polyhaven',
+    id,
+    name: asset.name || id,
+    description: asset.description ?? undefined,
+    thumbnailUrl: asset.thumbnail_url,
+    tags: Array.isArray(asset.tags) ? asset.tags : [],
+    categories: Array.isArray(asset.categories) ? asset.categories : [],
+    maxResolution: Array.isArray(asset.max_resolution) && asset.max_resolution.length === 2 ? asset.max_resolution : undefined,
+    downloadCount: typeof asset.download_count === 'number' ? asset.download_count : undefined,
+    files: [],
+    raw: asset,
+  };
+}
+
+function normalizeAmbientCGAsset(id, asset) {
+  const files = [];
+  if (typeof asset.downloadLink === 'string') {
+    files.push({ url: asset.downloadLink });
+  }
+  if (Array.isArray(asset.downloadLinks)) {
+    asset.downloadLinks.forEach((link) => {
+      if (typeof link === 'string') files.push({ url: link });
+      else if (link && typeof link.url === 'string') files.push({ url: link.url, md5: link.md5, size: link.size });
+    });
+  }
+  if (Array.isArray(asset.files)) {
+    asset.files.forEach((file) => {
+      if (file && typeof file.url === 'string') files.push({ url: file.url, md5: file.md5, size: file.size, type: file.type });
+    });
+  }
+
+  return {
+    source: 'ambientcg',
+    id: asset.id || id || asset.name || JSON.stringify(asset),
+    name: asset.name || asset.title || id || 'ambientCG asset',
+    description: asset.description ?? undefined,
+    thumbnailUrl: asset.thumbnailUrl || asset.preview || asset.thumbnail || undefined,
+    tags: Array.isArray(asset.tags) ? asset.tags : Array.isArray(asset.categories) ? asset.categories : [],
+    categories: Array.isArray(asset.categories) ? asset.categories : undefined,
+    maxResolution: Array.isArray(asset.max_resolution) && asset.max_resolution.length === 2 ? asset.max_resolution : undefined,
+    downloadCount: typeof asset.downloadCount === 'number' ? asset.downloadCount : undefined,
+    files,
+    raw: asset,
+  };
+}
+
+async function searchPolyHavenAssets(query) {
+  const url = new URL('https://api.polyhaven.com/assets');
+  url.searchParams.set('type', 'textures');
+  url.searchParams.set('t', 'textures');
+  url.searchParams.set('ext', 'apiassets');
+  if (query) {
+    url.searchParams.set('categories', query);
+    url.searchParams.set('c', query);
+  }
+
+  const response = await fetch(url.toString(), {
+    headers: {
+      'User-Agent': API_USER_AGENT,
+      Accept: 'application/json',
+    },
+  });
+
+  if (!response.ok) {
+    throw new Error(`PolyHaven API returned ${response.status}`);
+  }
+
+  const json = await response.json();
+  if (!json || typeof json !== 'object') {
+    return [];
+  }
+
+  const entries = Object.entries(json)
+    .map(([id, asset]) => normalizePolyHavenAsset(id, asset))
+    .filter((asset) => {
+      if (!query) return true;
+      const normalizedQuery = query.toLowerCase();
+      return [asset.name, ...(asset.tags ?? []), ...(asset.categories ?? [])].some((value) =>
+        typeof value === 'string' && value.toLowerCase().includes(normalizedQuery)
+      );
+    })
+    .slice(0, 12);
+
+  return entries;
+}
+
+async function searchAmbientCGAssets(query) {
+  const url = new URL(ambientCGApiUrl);
+  if (query) {
+    url.searchParams.set('q', query);
+    url.searchParams.set('query', query);
+    url.searchParams.set('search', query);
+  }
+  url.searchParams.set('limit', '12');
+
+  const response = await fetch(url.toString(), {
+    headers: {
+      'User-Agent': API_USER_AGENT,
+      Accept: 'application/json',
+    },
+  });
+
+  if (!response.ok) {
+    throw new Error(`ambientCG API returned ${response.status}`);
+  }
+
+  const json = await response.json();
+  const items = Array.isArray(json)
+    ? json
+    : Array.isArray(json.assets)
+      ? json.assets
+      : Array.isArray(json.results)
+        ? json.results
+        : [];
+
+  return items.slice(0, 12).map((item, index) => normalizeAmbientCGAsset(String(index), item));
+}
 
 app.post('/api/mistral/chat', async (req, res) => {
   if (client) {
@@ -82,6 +204,31 @@ app.post('/api/mistral/chat', async (req, res) => {
     console.error('Proxy request error:', error);
     res.status(500).json({ error: 'Failed to communicate with configured proxy', details: error.message });
   }
+});
+
+app.get('/api/asset-search', async (req, res) => {
+  const query = String(req.query.q || '');
+  const results = [];
+  const errors = {};
+
+  const [polyhaven, ambientcg] = await Promise.allSettled([
+    searchPolyHavenAssets(query),
+    searchAmbientCGAssets(query),
+  ]);
+
+  if (polyhaven.status === 'fulfilled') {
+    results.push(...polyhaven.value);
+  } else {
+    errors.polyhaven = String(polyhaven.reason?.message || polyhaven.reason || 'Unknown error');
+  }
+
+  if (ambientcg.status === 'fulfilled') {
+    results.push(...ambientcg.value);
+  } else {
+    errors.ambientcg = String(ambientcg.reason?.message || ambientcg.reason || 'Unknown error');
+  }
+
+  res.json({ results, errors });
 });
 
 app.get('/', (req, res) => {

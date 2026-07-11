@@ -32,6 +32,35 @@ export interface CustomMeshSpec {
   parts: MeshPart[];
 }
 
+export type AssetSource = 'polyhaven' | 'ambientcg';
+
+export interface AssetFile {
+  url: string;
+  md5?: string;
+  size?: number;
+  type?: string;
+}
+
+export interface AssetSearchResult {
+  source: AssetSource;
+  id: string;
+  name: string;
+  description?: string;
+  thumbnailUrl?: string;
+  tags?: string[];
+  categories?: string[];
+  maxResolution?: [number, number];
+  downloadCount?: number;
+  files?: AssetFile[];
+  raw?: unknown;
+}
+
+export interface AssetSearchResponse {
+  results: AssetSearchResult[];
+  errors?: Record<string, string>;
+  usedSources?: AssetSource[];
+}
+
 export interface GalleryEntry {
   id: string;
   prompt: string;

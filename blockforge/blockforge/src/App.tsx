@@ -2,7 +2,8 @@ import { useEffect, useState } from 'react';
 import MeshViewer from './components/MeshViewer';
 import Gallery from './components/Gallery';
 import { generateMesh } from './services/meshAI';
-import { CustomMeshSpec, GalleryEntry } from './types';
+import { searchAssets } from './services/assetAPI';
+import { AssetSearchResult, CustomMeshSpec, GalleryEntry } from './types';
 
 const STORAGE_KEY = 'blockforge_gallery';
 const SIZE_OPTIONS = ['any', 'small', 'medium', 'large'] as const;
@@ -41,7 +42,19 @@ export default function App() {
   const [activeId, setActiveId] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [assetQuery, setAssetQuery] = useState('plastic');
+  const [assetResults, setAssetResults] = useState<AssetSearchResult[]>([]);
+  const [assetLoading, setAssetLoading] = useState(false);
+  const [assetError, setAssetError] = useState<string | null>(null);
+  const [assetSearchTriggered, setAssetSearchTriggered] = useState(false);
+  const [showAssetStatus, setShowAssetStatus] = useState(true);
   const [gallery, setGallery] = useState<GalleryEntry[]>([]);
+
+  const polyHavenCount = assetResults.filter((result) => result.source === 'polyhaven').length;
+  const ambientCGCount = assetResults.filter((result) => result.source === 'ambientcg').length;
+  const usedSources = Array.from(new Set(assetResults.map((result) => result.source)));
+  const polyHavenUsed = polyHavenCount > 0;
+  const ambientCGUsed = ambientCGCount > 0;
 
   useEffect(() => {
     setGallery(loadGallery());
@@ -94,6 +107,8 @@ export default function App() {
     } finally {
       setIsLoading(false);
     }
+
+    handleAssetSearch();
   }
 
   function handleSelect(entry: GalleryEntry) {
@@ -101,6 +116,33 @@ export default function App() {
     setActiveId(entry.id);
     setPrompt(entry.prompt);
     setError(null);
+  }
+
+  async function handleAssetSearch(query?: string) {
+    if (assetLoading) return;
+    const searchQuery = typeof query === 'string' ? query.trim() : assetQuery.trim();
+    if (!searchQuery) return;
+
+    setAssetLoading(true);
+    setAssetError(null);
+    if (typeof query === 'string') {
+      setAssetQuery(searchQuery);
+    }
+
+    try {
+      const data = await searchAssets(searchQuery);
+      setAssetResults(data.results);
+      setAssetSearchTriggered(true);
+      if (data.errors && Object.keys(data.errors).length > 0) {
+        setAssetError(Object.values(data.errors).join(' · '));
+      }
+    } catch (err) {
+      setAssetResults([]);
+      setAssetSearchTriggered(true);
+      setAssetError(err instanceof Error ? err.message : 'Failed to fetch assets.');
+    } finally {
+      setAssetLoading(false);
+    }
   }
 
   function handleDelete(id: string) {
@@ -140,6 +182,19 @@ export default function App() {
           />
           <button className="prompt-button" onClick={() => handleGenerate()} disabled={isLoading || !prompt.trim()}>
             {isLoading ? 'Designing…' : 'Design it'}
+          </button>
+        </div>
+
+        <div className="asset-search-bar">
+          <input
+            className="prompt-input"
+            placeholder="Search PolyHaven + ambientCG textures"
+            value={assetQuery}
+            onChange={(e) => setAssetQuery(e.target.value)}
+            onKeyDown={(e) => { if (e.key === 'Enter') handleAssetSearch(); }}
+          />
+          <button className="prompt-button" onClick={() => handleAssetSearch()} disabled={assetLoading}>
+            {assetLoading ? 'Searching…' : 'Search assets'}
           </button>
         </div>
 
@@ -203,6 +258,34 @@ export default function App() {
         </div>
 
         {error && <div className="error-banner">{error}</div>}
+        {assetError && <div className="error-banner">{assetError}</div>}
+        {showAssetStatus ? (
+          <div className="asset-status-bar">
+            <div className={`asset-status-chip ${polyHavenUsed ? 'asset-status-chip--active' : ''}`}>
+              {polyHavenUsed
+                ? `PolyHaven textures loaded: ${polyHavenCount}`
+                : assetSearchTriggered
+                  ? 'PolyHaven textures loaded: 0'
+                  : 'PolyHaven textures pending'}
+            </div>
+            <div className={`asset-status-chip ${ambientCGUsed ? 'asset-status-chip--active' : ''}`}>
+              {ambientCGUsed
+                ? `ambientCG textures loaded: ${ambientCGCount}`
+                : assetSearchTriggered
+                  ? 'ambientCG textures loaded: 0'
+                  : 'ambientCG textures pending'}
+            </div>
+            <button type="button" className="asset-status-toggle" onClick={() => setShowAssetStatus(false)}>
+              Hide status
+            </button>
+          </div>
+        ) : (
+          <div className="asset-status-hidden">
+            <button type="button" className="asset-status-toggle" onClick={() => setShowAssetStatus(true)}>
+              Show texture status
+            </button>
+          </div>
+        )}
 
         <MeshViewer spec={spec} isLoading={isLoading} />
 
@@ -211,6 +294,35 @@ export default function App() {
             <div className="research-title">{spec.objectName}</div>
             <div className="research-note">{spec.materialResearch}</div>
             <div className="research-meta">{spec.parts.length} part{spec.parts.length === 1 ? '' : 's'}</div>
+          </div>
+        )}
+
+        {assetResults.length > 0 && (
+          <div className="asset-results-panel">
+            <div className="research-title">Textures used from PolyHaven / ambientCG</div>
+            <div className="asset-results-grid">
+              {assetResults.map((asset) => (
+                <div key={`${asset.source}-${asset.id}`} className="asset-result-card">
+                  <div className="asset-source">{asset.source === 'polyhaven' ? 'PolyHaven' : 'ambientCG'}</div>
+                  {asset.thumbnailUrl ? (
+                    <img className="asset-thumbnail" src={asset.thumbnailUrl} alt={asset.name} />
+                  ) : (
+                    <div className="asset-thumbnail asset-thumbnail--empty">No preview</div>
+                  )}
+                  <div className="asset-name">{asset.name}</div>
+                  <div className="asset-meta">
+                    {asset.tags?.slice(0, 3).join(', ') || asset.categories?.slice(0, 3).join(', ') || 'No tags'}
+                  </div>
+                  {asset.files?.[0]?.url ? (
+                    <a className="asset-download" href={asset.files[0].url} target="_blank" rel="noreferrer">
+                      Download file
+                    </a>
+                  ) : (
+                    <div className="asset-download asset-download--disabled">No file link</div>
+                  )}
+                </div>
+              ))}
+            </div>
           </div>
         )}
       </main>

@@ -138,11 +138,33 @@ function extractJson(text: string): unknown {
   if (cleaned.includes('```')) {
     cleaned = cleaned.replace(/```[a-z]*\n?/gi, '').replace(/```/g, '').trim();
   }
+
+  // Normalize JavaScript-style JSON-like output from the model.
+  cleaned = cleaned.replace(/\/\/.*$/gm, '');
+  cleaned = cleaned.replace(/\/\*[\s\S]*?\*\//g, '');
+  cleaned = cleaned.replace(/undefined/g, 'null');
+  cleaned = cleaned.replace(/NaN/g, '0');
+  cleaned = cleaned.replace(/Infinity/g, '0');
+  cleaned = cleaned.replace(/Math\.PI\s*([*/])\s*([0-9.]+)/g, (_, op, num) => {
+    const value = Number(num);
+    return Number.isFinite(value)
+      ? String(op === '*' ? Math.PI * value : Math.PI / value)
+      : String(Math.PI);
+  });
+  cleaned = cleaned.replace(/([0-9.]+)\s*\*\s*Math\.PI/g, (_, num) => {
+    const value = Number(num);
+    return Number.isFinite(value) ? String(value * Math.PI) : String(Math.PI);
+  });
+  cleaned = cleaned.replace(/Math\.PI/g, String(Math.PI));
+  cleaned = cleaned.replace(/([{,]\s*)([A-Za-z0-9_]+)\s*:/g, '$1"$2":');
+  cleaned = cleaned.replace(/,\s*([}\]])/g, '$1');
+
   const start = cleaned.indexOf('{');
   const end = cleaned.lastIndexOf('}');
   if (start === -1 || end === -1 || end < start) {
     throw new Error('No JSON object found in model response');
   }
+
   return JSON.parse(cleaned.slice(start, end + 1));
 }
 
