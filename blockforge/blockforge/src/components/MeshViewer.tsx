@@ -162,11 +162,23 @@ export default function MeshViewer({ spec, isLoading }: MeshViewerProps) {
       mesh.rotation.set(...part.rotation);
       mesh.castShadow = true;
       mesh.receiveShadow = true;
+      mesh.scale.set(0.01, 0.01, 0.01);
       group.add(mesh);
       maxHeight = Math.max(maxHeight, part.position[1] + 1);
     }
 
     cameraStateRef.current.dist = Math.max(3, Math.min(12, maxHeight * 2.5));
+
+    let s = 0.01;
+    const grow = () => {
+      s = Math.min(1, s + 0.09);
+      group.children.forEach((child) => {
+        const mesh = child as THREE.Mesh;
+        mesh.scale.set(s, s, s);
+      });
+      if (s < 1) requestAnimationFrame(grow);
+    };
+    grow();
   }, [spec]);
 
   return (

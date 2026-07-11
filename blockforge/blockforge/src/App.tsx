@@ -5,6 +5,11 @@ import { generateMesh } from './services/meshAI';
 import { CustomMeshSpec, GalleryEntry } from './types';
 
 const STORAGE_KEY = 'blockforge_gallery';
+const SIZE_OPTIONS = ['any', 'small', 'medium', 'large'] as const;
+const COLOR_OPTIONS = ['any', 'warm', 'cool', 'neutral', 'metallic'] as const;
+const MATERIAL_OPTIONS = ['any', 'wood', 'stone', 'metal', 'glass', 'plastic', 'ceramic'] as const;
+const TOOL_OPTIONS = ['auto', 'any', 'hammer-chisel', 'lathe', 'cnc', '3d-printer', 'mold-cast', 'laser-cut'] as const;
+const SKILL_OPTIONS = ['auto', 'any', 'joinery', 'carving', 'sculpting', 'precision-machining', 'architectural-detail', 'ornamental'] as const;
 const QUICK_PICKS = ['brick', 'wooden door', 'egg', 'stone wall', 'roof tile', 'garden fence'];
 
 function loadGallery(): GalleryEntry[] {
@@ -26,6 +31,12 @@ function saveGallery(entries: GalleryEntry[]) {
 
 export default function App() {
   const [prompt, setPrompt] = useState('');
+  const [size, setSize] = useState<(typeof SIZE_OPTIONS)[number]>('any');
+  const [color, setColor] = useState<(typeof COLOR_OPTIONS)[number]>('any');
+  const [material, setMaterial] = useState<(typeof MATERIAL_OPTIONS)[number]>('any');
+  const [tool, setTool] = useState<(typeof TOOL_OPTIONS)[number]>('auto');
+  const [skill, setSkill] = useState<(typeof SKILL_OPTIONS)[number]>('auto');
+  const [extraFeature, setExtraFeature] = useState('');
   const [spec, setSpec] = useState<CustomMeshSpec | null>(null);
   const [activeId, setActiveId] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(false);
@@ -40,10 +51,31 @@ export default function App() {
     const description = (overridePrompt ?? prompt).trim();
     if (!description || isLoading) return;
 
+    const filterPrompts: string[] = [];
+    if (size !== 'any') filterPrompts.push(`${size} size`);
+    if (color !== 'any') filterPrompts.push(`${color} color palette`);
+    if (material !== 'any') filterPrompts.push(`${material} material`);
+    if (tool === 'auto') {
+      filterPrompts.push('choose the most suitable fabrication tools automatically');
+    } else if (tool !== 'any') {
+      filterPrompts.push(`crafted with ${tool}`);
+    }
+
+    if (skill === 'auto') {
+      filterPrompts.push('choose the most suitable craftsmanship skill level automatically');
+    } else if (skill !== 'any') {
+      filterPrompts.push(`showing ${skill} skill level finish`);
+    }
+    if (extraFeature.trim()) filterPrompts.push(extraFeature.trim());
+
+    const descriptionWithFilters = filterPrompts.length
+      ? `${description} with ${filterPrompts.join(', ')}`
+      : description;
+
     setIsLoading(true);
     setError(null);
     try {
-      const { spec: newSpec } = await generateMesh(description);
+      const { spec: newSpec } = await generateMesh(descriptionWithFilters);
       const entry: GalleryEntry = {
         id: crypto.randomUUID?.() ?? `${Date.now()}-${Math.random().toString(36).slice(2)}`,
         prompt: description,
@@ -109,6 +141,52 @@ export default function App() {
           <button className="prompt-button" onClick={() => handleGenerate()} disabled={isLoading || !prompt.trim()}>
             {isLoading ? 'Designing…' : 'Design it'}
           </button>
+        </div>
+
+        <div className="filter-bar">
+          <select className="filter-select" value={size} onChange={(e) => setSize(e.target.value as typeof size)}>
+            {SIZE_OPTIONS.map((option) => (
+              <option key={option} value={option}>{option === 'any' ? 'Any size' : `${option.charAt(0).toUpperCase() + option.slice(1)} size`}</option>
+            ))}
+          </select>
+          <select className="filter-select" value={color} onChange={(e) => setColor(e.target.value as typeof color)}>
+            {COLOR_OPTIONS.map((option) => (
+              <option key={option} value={option}>{option === 'any' ? 'Any color' : `${option.charAt(0).toUpperCase() + option.slice(1)} color`}</option>
+            ))}
+          </select>
+          <select className="filter-select" value={material} onChange={(e) => setMaterial(e.target.value as typeof material)}>
+            {MATERIAL_OPTIONS.map((option) => (
+              <option key={option} value={option}>{option === 'any' ? 'Any material' : `${option.charAt(0).toUpperCase() + option.slice(1)}`}</option>
+            ))}
+          </select>
+          <select className="filter-select" value={tool} onChange={(e) => setTool(e.target.value as typeof tool)}>
+            {TOOL_OPTIONS.map((option) => (
+              <option key={option} value={option}>
+                {option === 'auto'
+                  ? 'Tool: Auto (AI decides)'
+                  : option === 'any'
+                    ? 'Any tool'
+                    : `Tool: ${option.replace(/-/g, ' ')}`}
+              </option>
+            ))}
+          </select>
+          <select className="filter-select" value={skill} onChange={(e) => setSkill(e.target.value as typeof skill)}>
+            {SKILL_OPTIONS.map((option) => (
+              <option key={option} value={option}>
+                {option === 'auto'
+                  ? 'Skill: Auto (AI decides)'
+                  : option === 'any'
+                    ? 'Any skill'
+                    : `Skill: ${option.replace(/-/g, ' ')}`}
+              </option>
+            ))}
+          </select>
+          <input
+            className="filter-input"
+            placeholder="Extra feature (textured, hollow, beveled, embossed)"
+            value={extraFeature}
+            onChange={(e) => setExtraFeature(e.target.value)}
+          />
         </div>
 
         <div className="quick-picks">
