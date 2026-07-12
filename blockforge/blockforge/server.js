@@ -82,11 +82,84 @@ async function fetchPolyHavenTextureUrl(assetId) {
 function buildPolyHavenAssetFiles(id, asset) {
   const safeId = id.toLowerCase().replace(/\s+/g, '_').replace(/[^a-z0-9_]/g, '');
   const assetId = safeId || id;
-  const files = [{ url: `https://polyhaven.com/a/${assetId}`, type: 'page' }];
-  if (typeof asset._textureUrl === 'string') {
-    files.unshift({ url: asset._textureUrl, type: 'diffuse' });
+  // This is a link to the asset's PolyHaven *webpage*, not a texture file --
+  // PolyHaven's search endpoint (/assets) never returns map URLs. Real map
+  // URLs require a second call to /files/{id}, which is comparatively slow
+  // (one request per asset), so we don't do it for every search result --
+  // see /api/polyhaven-files/:id below, called only for the asset actually
+  // chosen for texturing.
+  return [{ url: `https://polyhaven.com/a/${assetId}`, type: 'page' }];
+}
+
+// PolyHaven's /files/{id} response looks like:
+//   { "Diffuse": { "1k": { "jpg": { url, size, md5 }, "png": {...} }, "2k": {...} },
+//     "nor_gl":  { "1k": {...} }, "Rough": { "1k": {...} }, "AO": { "1k": {...} }, ... }
+// Top-level keys are the map-type names; resolutions and formats vary by
+// asset. We classify by key name (case-insensitively, allowing for the
+// handful of naming variants PolyHaven uses) and pick the smallest
+// available resolution in jpg (falling back to png) to keep downloads fast.
+const POLYHAVEN_MAP_KEY_PATTERNS = [
+  { field: 'diffuse', re: /^(diffuse|albedo|color)$/i },
+  { field: 'normal', re: /^(nor(_gl|_dx)?|normal)$/i },
+  { field: 'roughness', re: /^rough(ness)?$/i },
+  { field: 'ao', re: /^ao$|ambient.?occlusion/i },
+];
+
+function pickSmallestFile(resolutionMap) {
+  if (!resolutionMap || typeof resolutionMap !== 'object') return undefined;
+  const resolutions = Object.keys(resolutionMap).sort((a, b) => {
+    const na = parseInt(a, 10) || Infinity;
+    const nb = parseInt(b, 10) || Infinity;
+    return na - nb;
+  });
+  for (const res of resolutions) {
+    const formats = resolutionMap[res];
+    if (!formats || typeof formats !== 'object') continue;
+    const file = formats.jpg || formats.png || Object.values(formats)[0];
+    if (file && typeof file.url === 'string') return file.url;
   }
-  return files;
+  return undefined;
+}
+
+async function fetchPolyHavenMaps(id) {
+  const response = await fetch(`https://api.polyhaven.com/files/${encodeURIComponent(id)}`, {
+    headers: { 'User-Agent': API_USER_AGENT, Accept: 'application/json' },
+  });
+  if (!response.ok) {
+    throw new Error(`PolyHaven files API returned ${response.status}`);
+  }
+  const json = await response.json();
+  const maps = {};
+  for (const [key, value] of Object.entries(json || {})) {
+    const match = POLYHAVEN_MAP_KEY_PATTERNS.find((p) => p.re.test(key));
+    if (!match || maps[match.field]) continue;
+    const url = pickSmallestFile(value);
+    if (url) maps[match.field] = url;
+  }
+  return maps;
+}
+
+// ambientCG's search results already carry real download links (unlike
+// PolyHaven), but they're an undifferentiated pile -- this sorts them into
+// diffuse/normal/roughness/ao by matching common ambientCG filename
+// conventions (e.g. "..._Color.jpg", "..._NormalGL.jpg", "..._Roughness.jpg").
+const AMBIENTCG_MAP_PATTERNS = [
+  { field: 'diffuse', re: /(_|-)(color|albedo|diffuse)(_|-|\.)/i },
+  { field: 'normal', re: /(_|-)(normal(gl|dx)?)(_|-|\.)/i },
+  { field: 'roughness', re: /(_|-)(roughness)(_|-|\.)/i },
+  { field: 'ao', re: /(_|-)(ao|ambientocclusion)(_|-|\.)/i },
+];
+
+function classifyAmbientCGMaps(files) {
+  const maps = {};
+  for (const file of files) {
+    if (!file || typeof file.url !== 'string') continue;
+    const match = AMBIENTCG_MAP_PATTERNS.find((p) => p.re.test(file.url));
+    if (match && !maps[match.field]) {
+      maps[match.field] = file.url;
+    }
+  }
+  return maps;
 }
 
 function normalizeAmbientCGAsset(id, asset) {
@@ -127,6 +200,7 @@ function normalizeAmbientCGAsset(id, asset) {
     maxResolution: Array.isArray(asset.max_resolution) && asset.max_resolution.length === 2 ? asset.max_resolution : undefined,
     downloadCount: typeof asset.downloadCount === 'number' ? asset.downloadCount : undefined,
     files,
+    maps: classifyAmbientCGMaps(files),
     raw: asset,
   };
 }
@@ -168,13 +242,7 @@ async function searchPolyHavenAssets(query) {
     })
     .slice(0, 12);
 
-  const entries = await Promise.all(
-    rawEntries.map(async ([id, asset]) => {
-      const textureUrl = await fetchPolyHavenTextureUrl(id);
-      if (textureUrl) asset._textureUrl = textureUrl;
-      return normalizePolyHavenAsset(id, asset);
-    })
-  );
+  const entries = rawEntries.map(([id, asset]) => normalizePolyHavenAsset(id, asset));
 
   return entries;
 }
@@ -276,6 +344,20 @@ app.get('/api/asset-search', async (req, res) => {
   }
 
   res.json({ results, errors });
+});
+
+// On-demand real map fetch for a single PolyHaven asset. Deliberately not
+// folded into /api/asset-search -- calling PolyHaven's /files/{id} for
+// every one of a dozen search results would be a dozen extra round trips
+// for maps that mostly never get used. The client only calls this for the
+// one asset it's actually about to apply to the mesh.
+app.get('/api/polyhaven-files/:id', async (req, res) => {
+  try {
+    const maps = await fetchPolyHavenMaps(req.params.id);
+    res.json({ maps });
+  } catch (error) {
+    res.status(502).json({ error: 'Failed to fetch PolyHaven file list', details: error.message });
+  }
 });
 
 app.get('/', (req, res) => {

@@ -1,4 +1,4 @@
-import { AssetSearchResponse, AssetSearchResult } from '../types';
+import { AssetSearchResponse, AssetSearchResult, TextureMapSet } from '../types';
 
 function normalizePolyHavenAsset(id: string, asset: any): AssetSearchResult {
   return {
@@ -16,31 +16,8 @@ function normalizePolyHavenAsset(id: string, asset: any): AssetSearchResult {
   };
 }
 
-async function fetchPolyHavenTextureUrl(assetId: string): Promise<string | null> {
-  try {
-    const res = await fetch(`https://api.polyhaven.com/files/${assetId}`, {
-      headers: { 'Accept': 'application/json' },
-    });
-    if (!res.ok) return null;
-    const files = await res.json();
-    const diffuse = files?.Diffuse || files?.diffuse;
-    if (!diffuse) return null;
-    const res2k = diffuse['2k'] || diffuse['1k'] || diffuse['4k'];
-    if (!res2k) return null;
-    const jpg = res2k?.jpg || res2k?.png;
-    return jpg?.url || null;
-  } catch {
-    return null;
-  }
-}
-
 function buildPolyHavenAssetFiles(id: string, asset: any): { url: string; type?: string; size?: number }[] {
-  const files: { url: string; type?: string; size?: number }[] = [];
-  files.push({ url: `https://polyhaven.com/a/${encodeURIComponent(id)}`, type: 'page' });
-  if (typeof asset._textureUrl === 'string') {
-    files.unshift({ url: asset._textureUrl, type: 'diffuse' });
-  }
-  return files;
+  return [{ url: `https://polyhaven.com/a/${encodeURIComponent(id)}`, type: 'page' }];
 }
 
 
@@ -81,14 +58,7 @@ async function fetchPolyHavenDirect(query: string): Promise<AssetSearchResponse>
   }
 
   const json = await response.json();
-  const rawEntries = Object.entries(json || {});
-  const results: AssetSearchResult[] = await Promise.all(
-    rawEntries.map(async ([id, asset]: [string, any]) => {
-      const textureUrl = await fetchPolyHavenTextureUrl(id);
-      if (textureUrl) asset._textureUrl = textureUrl;
-      return normalizePolyHavenAsset(id, asset);
-    })
-  );
+  let results: AssetSearchResult[] = Object.entries(json || {}).map(([id, asset]) => normalizePolyHavenAsset(id, asset));
 
   if (trimmedQuery && results.length === 0) {
     const fallbackUrl = new URL(baseUrl);
@@ -102,14 +72,7 @@ async function fetchPolyHavenDirect(query: string): Promise<AssetSearchResponse>
       throw new Error(`PolyHaven fallback fetch failed with status ${fallbackResp.status}`);
     }
     const fallbackJson = await fallbackResp.json();
-    const fallbackRaw = Object.entries(fallbackJson || {});
-    const allResults = await Promise.all(
-      fallbackRaw.map(async ([id, asset]: [string, any]) => {
-        const textureUrl = await fetchPolyHavenTextureUrl(id);
-        if (textureUrl) asset._textureUrl = textureUrl;
-        return normalizePolyHavenAsset(id, asset);
-      })
-    );
+    const allResults = Object.entries(fallbackJson || {}).map(([id, asset]) => normalizePolyHavenAsset(id, asset));
     results = filterPolyHavenResults(allResults, trimmedQuery);
   }
 
@@ -146,5 +109,70 @@ export async function searchAssets(query: string): Promise<AssetSearchResponse> 
     }
     // If the proxy route is unavailable, fall back to direct PolyHaven search.
     return fetchPolyHavenDirect(query);
+  }
+}
+
+// PolyHaven's /files/{id} response shape, matched the same way as the
+// server-side classifier in server.js -- see that file for the field notes.
+const POLYHAVEN_MAP_KEY_PATTERNS: { field: keyof TextureMapSet; re: RegExp }[] = [
+  { field: 'diffuse', re: /^(diffuse|albedo|color)$/i },
+  { field: 'normal', re: /^(nor(_gl|_dx)?|normal)$/i },
+  { field: 'roughness', re: /^rough(ness)?$/i },
+  { field: 'ao', re: /^ao$|ambient.?occlusion/i },
+];
+
+function pickSmallestFile(resolutionMap: any): string | undefined {
+  if (!resolutionMap || typeof resolutionMap !== 'object') return undefined;
+  const resolutions = Object.keys(resolutionMap).sort((a, b) => {
+    const na = parseInt(a, 10) || Infinity;
+    const nb = parseInt(b, 10) || Infinity;
+    return na - nb;
+  });
+  for (const res of resolutions) {
+    const formats = resolutionMap[res];
+    if (!formats || typeof formats !== 'object') continue;
+    const file = formats.jpg || formats.png || Object.values(formats)[0];
+    if (file && typeof (file as any).url === 'string') return (file as any).url;
+  }
+  return undefined;
+}
+
+async function fetchPolyHavenMapsDirect(id: string): Promise<TextureMapSet> {
+  const response = await fetch(`https://api.polyhaven.com/files/${encodeURIComponent(id)}`, {
+    headers: { Accept: 'application/json' },
+  });
+  if (!response.ok) {
+    throw new Error(`PolyHaven files API returned ${response.status}`);
+  }
+  const json = await response.json();
+  const maps: TextureMapSet = {};
+  for (const [key, value] of Object.entries(json || {})) {
+    const match = POLYHAVEN_MAP_KEY_PATTERNS.find((p) => p.re.test(key));
+    if (!match || maps[match.field]) continue;
+    const url = pickSmallestFile(value);
+    if (url) maps[match.field] = url;
+  }
+  return maps;
+}
+
+// Fetches real PBR maps for a single chosen asset. Only called for the one
+// asset actually being applied to a mesh -- not for every search result,
+// since PolyHaven's map data requires a dedicated request per asset.
+// ambientCG results already carry `maps` from search (see server.js), so
+// this is only meaningful for PolyHaven results.
+export async function fetchTextureMaps(asset: AssetSearchResult): Promise<TextureMapSet> {
+  if (asset.maps && Object.keys(asset.maps).length > 0) return asset.maps;
+  if (asset.source !== 'polyhaven') return {};
+
+  try {
+    const response = await fetch(`/api/polyhaven-files/${encodeURIComponent(asset.id)}`);
+    if (response.status === 404) return fetchPolyHavenMapsDirect(asset.id);
+    if (!response.ok) throw new Error(`Map fetch failed with status ${response.status}`);
+    const data = await response.json();
+    return data.maps ?? {};
+  } catch {
+    // Server route unavailable (e.g. static deploy with no server.js) --
+    // PolyHaven's API is CORS-open, so call it directly as a last resort.
+    return fetchPolyHavenMapsDirect(asset.id);
   }
 }

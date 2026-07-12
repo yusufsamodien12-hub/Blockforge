@@ -354,11 +354,38 @@ html, body, #root {
   gap: 10px;
 }
 
+.asset-result-card--applied {
+  border-color: rgba(52, 211, 153, 0.6);
+  box-shadow: 0 0 0 1px rgba(52, 211, 153, 0.25);
+}
+
 .asset-source {
   font-size: 10px;
   text-transform: uppercase;
   letter-spacing: 0.08em;
   color: rgba(56, 189, 248, 0.9);
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.applied-badge {
+  font-size: 9px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: #34d399;
+  background: rgba(52, 211, 153, 0.12);
+  border: 1px solid rgba(52, 211, 153, 0.35);
+  border-radius: 999px;
+  padding: 2px 8px;
+}
+
+.applied-badge--loading {
+  color: #7dd3fc;
+  background: rgba(56, 189, 248, 0.12);
+  border-color: rgba(56, 189, 248, 0.35);
+  margin-left: 8px;
 }
 
 .asset-thumbnail {

@@ -2,8 +2,8 @@ import { useEffect, useState } from 'react';
 import MeshViewer from './components/MeshViewer';
 import Gallery from './components/Gallery';
 import { generateMesh } from './services/meshAI';
-import { searchAssets } from './services/assetAPI';
-import { AssetSearchResult, CustomMeshSpec, GalleryEntry } from './types';
+import { searchAssets, fetchTextureMaps } from './services/assetAPI';
+import { AssetSearchResult, CustomMeshSpec, GalleryEntry, TextureMapSet } from './types';
 
 const STORAGE_KEY = 'blockforge_gallery';
 const SIZE_OPTIONS = ['any', 'small', 'medium', 'large'] as const;
@@ -47,7 +47,9 @@ export default function App() {
   const [assetError, setAssetError] = useState<string | null>(null);
   const [assetSearchTriggered, setAssetSearchTriggered] = useState(false);
   const [showAssetStatus, setShowAssetStatus] = useState(true);
-  const [textureUrl, setTextureUrl] = useState<string | null>(null);
+  const [textureMaps, setTextureMaps] = useState<TextureMapSet | null>(null);
+  const [appliedAssetId, setAppliedAssetId] = useState<string | null>(null);
+  const [textureMapsLoading, setTextureMapsLoading] = useState(false);
   const [viewerMaximized, setViewerMaximized] = useState(false);
   const [gallery, setGallery] = useState<GalleryEntry[]>([]);
 
@@ -61,23 +63,46 @@ export default function App() {
     setGallery(loadGallery());
   }, []);
 
-  function getTextureUrlFromAsset(asset: AssetSearchResult): string | null {
-    const downloadFile = asset.files?.find(
-      (f) => typeof f.url === 'string' && f.type !== 'page' && /\.(jpe?g|png|webp|avif|gif)$/i.test(f.url)
-    );
-    if (downloadFile?.url) return downloadFile.url;
-    if (asset.thumbnailUrl && /\.(jpe?g|png|webp|avif|gif)$/i.test(asset.thumbnailUrl)) {
-      return asset.thumbnailUrl;
-    }
-    return null;
-  }
-
   useEffect(() => {
-    const assetWithTexture = assetResults
-      .map((asset) => ({ asset, url: getTextureUrlFromAsset(asset) }))
-      .find((item) => item.url);
+    let cancelled = false;
 
-    setTextureUrl(assetWithTexture?.url ?? null);
+    async function pickAndLoad() {
+      if (assetResults.length === 0) {
+        setTextureMaps(null);
+        setAppliedAssetId(null);
+        return;
+      }
+
+      // Prefer a result that already has classified maps (ambientCG, right
+      // from search -- no extra request needed). Otherwise fall back to the
+      // first PolyHaven result and fetch its real maps on demand -- only
+      // for this one candidate, not every search result.
+      const withMaps = assetResults.find((a) => a.maps && Object.keys(a.maps).length > 0);
+      const candidate = withMaps ?? assetResults[0];
+
+      setTextureMapsLoading(true);
+      try {
+        const maps = await fetchTextureMaps(candidate);
+        if (cancelled) return;
+        if (Object.keys(maps).length === 0) {
+          setTextureMaps(null);
+          setAppliedAssetId(null);
+        } else {
+          setTextureMaps(maps);
+          setAppliedAssetId(`${candidate.source}-${candidate.id}`);
+        }
+      } catch {
+        if (!cancelled) {
+          setTextureMaps(null);
+          setAppliedAssetId(null);
+        }
+      } finally {
+        if (!cancelled) setTextureMapsLoading(false);
+      }
+    }
+
+    pickAndLoad();
+    return () => { cancelled = true; };
   }, [assetResults]);
 
   function buildTextureSearchQuery(description: string) {
@@ -277,17 +302,20 @@ export default function App() {
             <div className="asset-status-bar">
               <div className={`asset-status-chip ${polyHavenUsed ? 'asset-status-chip--active' : ''}`}>
                 {polyHavenUsed
-                  ? `PolyHaven textures loaded: ${polyHavenCount}`
+                  ? `PolyHaven results found: ${polyHavenCount}`
                   : assetSearchTriggered
-                    ? 'PolyHaven textures loaded: 0'
-                    : 'PolyHaven textures pending'}
+                    ? 'PolyHaven results found: 0'
+                    : 'PolyHaven search pending'}
               </div>
               <div className={`asset-status-chip ${ambientCGUsed ? 'asset-status-chip--active' : ''}`}>
                 {ambientCGUsed
-                  ? `ambientCG textures loaded: ${ambientCGCount}`
+                  ? `ambientCG results found: ${ambientCGCount}`
                   : assetSearchTriggered
-                    ? 'ambientCG textures loaded: 0'
-                    : 'ambientCG textures pending'}
+                    ? 'ambientCG results found: 0'
+                    : 'ambientCG search pending'}
+              </div>
+              <div className={`asset-status-chip ${appliedAssetId ? 'asset-status-chip--active' : ''}`}>
+                {textureMapsLoading ? 'Applying texture…' : appliedAssetId ? 'Texture applied to mesh' : 'No texture applied'}
               </div>
               <button type="button" className="asset-status-toggle" onClick={() => setShowAssetStatus(false)}>
                 Hide status
@@ -311,7 +339,7 @@ export default function App() {
             >
               {viewerMaximized ? 'Restore view' : 'Maximize view'}
             </button>
-            <MeshViewer spec={spec} isLoading={isLoading} textureUrl={textureUrl} />
+            <MeshViewer spec={spec} isLoading={isLoading} textureMaps={textureMaps} />
           </div>
 
           {spec && (
@@ -324,29 +352,44 @@ export default function App() {
 
           {assetResults.length > 0 && (
             <div className="asset-results-panel">
-              <div className="research-title">Texture search results (first match applied)</div>
+              <div className="research-title">
+                Texture search results
+                {textureMapsLoading && <span className="applied-badge applied-badge--loading">Applying…</span>}
+              </div>
+              <div className="research-note">
+                {appliedAssetId
+                  ? 'One result below is actually applied to the mesh (marked "Applied"). The rest are shown for reference only.'
+                  : "None of these are applied to the mesh yet -- they're shown for reference only."}
+              </div>
               <div className="asset-results-grid">
-                {assetResults.map((asset) => (
-                  <div key={`${asset.source}-${asset.id}`} className="asset-result-card">
-                    <div className="asset-source">{asset.source === 'polyhaven' ? 'PolyHaven' : 'ambientCG'}</div>
-                    {asset.thumbnailUrl ? (
-                      <img className="asset-thumbnail" src={asset.thumbnailUrl} alt={asset.name} />
-                    ) : (
-                      <div className="asset-thumbnail asset-thumbnail--empty">No preview</div>
-                    )}
-                    <div className="asset-name">{asset.name}</div>
-                    <div className="asset-meta">
-                      {asset.tags?.slice(0, 3).join(', ') || asset.categories?.slice(0, 3).join(', ') || 'No tags'}
+                {assetResults.map((asset) => {
+                  const key = `${asset.source}-${asset.id}`;
+                  const isApplied = key === appliedAssetId;
+                  return (
+                    <div key={key} className={`asset-result-card ${isApplied ? 'asset-result-card--applied' : ''}`}>
+                      <div className="asset-source">
+                        {asset.source === 'polyhaven' ? 'PolyHaven' : 'ambientCG'}
+                        {isApplied && <span className="applied-badge">Applied</span>}
+                      </div>
+                      {asset.thumbnailUrl ? (
+                        <img className="asset-thumbnail" src={asset.thumbnailUrl} alt={asset.name} />
+                      ) : (
+                        <div className="asset-thumbnail asset-thumbnail--empty">No preview</div>
+                      )}
+                      <div className="asset-name">{asset.name}</div>
+                      <div className="asset-meta">
+                        {asset.tags?.slice(0, 3).join(', ') || asset.categories?.slice(0, 3).join(', ') || 'No tags'}
+                      </div>
+                      {asset.files?.[0]?.url ? (
+                        <a className="asset-download" href={asset.files[0].url} target="_blank" rel="noreferrer">
+                          {asset.files[0].type === 'page' ? 'Open asset page' : 'Download file'}
+                        </a>
+                      ) : (
+                        <div className="asset-download asset-download--disabled">No file link</div>
+                      )}
                     </div>
-                    {asset.files?.[0]?.url ? (
-                      <a className="asset-download" href={asset.files[0].url} target="_blank" rel="noreferrer">
-                        {asset.files[0].type === 'page' ? 'Open asset' : 'Download file'}
-                      </a>
-                    ) : (
-                      <div className="asset-download asset-download--disabled">No file link</div>
-                    )}
-                  </div>
-                ))}
+                  );
+                })}
               </div>
             </div>
           )}

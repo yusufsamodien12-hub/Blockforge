@@ -174,7 +174,12 @@ function extractJson(text: string): unknown {
 export async function generateMesh(objectDescription: string): Promise<GenerateMeshResult> {
   const envProxyUrl = (import.meta as any)?.env?.VITE_PROXY_URL as string | undefined;
   const directKey = (import.meta as any)?.env?.VITE_MISTRAL_API_KEY as string | undefined;
-  const proxyUrl = directKey ? undefined : (envProxyUrl ?? '/api/mistral/chat');
+  // Only assume "there's a local server.js on this origin" when nothing
+  // else is configured. This used to default to '/api/mistral/chat'
+  // unconditionally, which made the directKey branch below unreachable --
+  // VITE_MISTRAL_API_KEY-only setups (still documented in .env.example)
+  // silently 404'd against a route that doesn't exist on a static deploy.
+  const proxyUrl = envProxyUrl ?? (directKey ? undefined : '/api/mistral/chat');
 
   const prompt = `Design a precise 3D mesh for: "${objectDescription.trim()}"`;
   let responseText: string;

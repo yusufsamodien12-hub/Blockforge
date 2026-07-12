@@ -1,11 +1,11 @@
 import { useEffect, useRef } from 'react';
 import * as THREE from 'three';
-import { CustomMeshSpec } from '../types';
+import { CustomMeshSpec, TextureMapSet } from '../types';
 
 interface MeshViewerProps {
   spec: CustomMeshSpec | null;
   isLoading: boolean;
-  textureUrl?: string | null;
+  textureMaps?: TextureMapSet | null;
 }
 
 function buildGeometry(part: CustomMeshSpec['parts'][number]): THREE.BufferGeometry {
@@ -25,12 +25,23 @@ function buildGeometry(part: CustomMeshSpec['parts'][number]): THREE.BufferGeome
   }
 }
 
-export default function MeshViewer({ spec, isLoading, textureUrl }: MeshViewerProps) {
+// A texture tiled at 1x1 over a large part looks like one giant stretched
+// smear; tiled at a fixed high count over a small part looks like noise.
+// Estimate each part's largest visible dimension and repeat the texture
+// roughly once per half-meter, so scale stays reasonably consistent across
+// differently-sized parts of the same object.
+const METERS_PER_TILE = 0.5;
+function estimateFootprintMeters(part: CustomMeshSpec['parts'][number]): number {
+  const dims = part.args.slice(0, 3).filter((n) => Number.isFinite(n));
+  return dims.length > 0 ? Math.max(...dims) : 0.5;
+}
+
+export default function MeshViewer({ spec, isLoading, textureMaps }: MeshViewerProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const sceneRef = useRef<THREE.Scene | null>(null);
   const rendererRef = useRef<THREE.WebGLRenderer | null>(null);
   const objectGroupRef = useRef<THREE.Group | null>(null);
-  const textureRef = useRef<THREE.Texture | null>(null);
+  const loadedTexturesRef = useRef<THREE.Texture[]>([]);
   const cameraStateRef = useRef({ angle: 0.6, elevation: 0.45, dist: 6 });
   const draggingRef = useRef(false);
 
@@ -135,14 +146,12 @@ export default function MeshViewer({ spec, isLoading, textureUrl }: MeshViewerPr
       renderer.domElement.removeEventListener('wheel', onWheel);
       renderer.dispose();
       if (container.contains(renderer.domElement)) container.removeChild(renderer.domElement);
-      if (textureRef.current) {
-        textureRef.current.dispose();
-        textureRef.current = null;
-      }
+      loadedTexturesRef.current.forEach((t) => t.dispose());
+      loadedTexturesRef.current = [];
     };
   }, []);
 
-  // Rebuild the object whenever the spec or texture changes.
+  // Rebuild the object whenever the spec or texture maps change.
   useEffect(() => {
     const group = objectGroupRef.current;
     if (!group) return;
@@ -160,49 +169,94 @@ export default function MeshViewer({ spec, isLoading, textureUrl }: MeshViewerPr
 
     if (!spec) return;
 
-    const loadTexture = (url: string): Promise<THREE.Texture> => {
-      return new Promise((resolve, reject) => {
-        const loader = new THREE.TextureLoader();
-        loader.load(
-          url,
-          (texture) => resolve(texture),
-          undefined,
-          (err) => reject(err)
-        );
+    const loader = new THREE.TextureLoader();
+    const loadTexture = (url: string): Promise<THREE.Texture> =>
+      new Promise((resolve, reject) => {
+        loader.load(url, resolve, undefined, reject);
       });
+
+    // Load each present map type once (not once per part -- every part
+    // sharing this texture set reuses the same loaded THREE.Texture
+    // objects, just with per-part repeat/offset settings via clone()).
+    const loadMapSet = async (maps: TextureMapSet | null | undefined) => {
+      if (!maps) return {};
+      const entries = await Promise.all(
+        (Object.entries(maps) as [keyof TextureMapSet, string | undefined][])
+          .filter((entry): entry is [keyof TextureMapSet, string] => Boolean(entry[1]))
+          .map(async ([field, url]) => {
+            try {
+              const texture = await loadTexture(url);
+              return [field, texture] as const;
+            } catch {
+              return [field, null] as const;
+            }
+          })
+      );
+      return Object.fromEntries(entries.filter(([, tex]) => tex !== null)) as Partial<Record<keyof TextureMapSet, THREE.Texture>>;
+    };
+
+    const configureTile = (texture: THREE.Texture, footprintMeters: number, colorSpace = false): THREE.Texture => {
+      const tiled = texture.clone();
+      tiled.needsUpdate = true;
+      tiled.wrapS = THREE.RepeatWrapping;
+      tiled.wrapT = THREE.RepeatWrapping;
+      const repeatCount = Math.max(1, Math.round(footprintMeters / METERS_PER_TILE));
+      tiled.repeat.set(repeatCount, repeatCount);
+      tiled.anisotropy = 8;
+      if (colorSpace) tiled.colorSpace = THREE.SRGBColorSpace;
+      return tiled;
     };
 
     const buildMeshes = async () => {
-      if (textureRef.current) {
-        textureRef.current.dispose();
-        textureRef.current = null;
-      }
+      loadedTexturesRef.current.forEach((t) => t.dispose());
+      loadedTexturesRef.current = [];
 
-      if (textureUrl) {
-        try {
-          const texture = await loadTexture(textureUrl);
-          if (!active) return;
-          texture.wrapS = THREE.RepeatWrapping;
-          texture.wrapT = THREE.RepeatWrapping;
-          texture.repeat.set(3, 3);
-          texture.anisotropy = 16;
-          textureRef.current = texture;
-        } catch {
-          textureRef.current = null;
-        }
-      }
+      const baseMaps = await loadMapSet(textureMaps);
+      if (!active) return;
 
       let maxHeight = 0;
       for (const part of spec.parts) {
         const geometry = buildGeometry(part);
-        const material = new THREE.MeshStandardMaterial({
+        const footprint = estimateFootprintMeters(part);
+
+        const materialOptions: THREE.MeshStandardMaterialParameters = {
           color: part.material.color,
           roughness: part.material.roughness,
           metalness: part.material.metalness,
           emissive: part.material.emissive ?? '#000000',
           emissiveIntensity: part.material.emissiveIntensity ?? 0,
-          map: textureRef.current ?? null,
-        });
+        };
+
+        if (baseMaps.diffuse) {
+          const tiled = configureTile(baseMaps.diffuse, footprint, true);
+          materialOptions.map = tiled;
+          loadedTexturesRef.current.push(tiled);
+        }
+        if (baseMaps.normal) {
+          const tiled = configureTile(baseMaps.normal, footprint);
+          materialOptions.normalMap = tiled;
+          loadedTexturesRef.current.push(tiled);
+        }
+        if (baseMaps.roughness) {
+          const tiled = configureTile(baseMaps.roughness, footprint);
+          materialOptions.roughnessMap = tiled;
+          loadedTexturesRef.current.push(tiled);
+        }
+        if (baseMaps.ao) {
+          const tiled = configureTile(baseMaps.ao, footprint);
+          materialOptions.aoMap = tiled;
+          materialOptions.aoMapIntensity = 1;
+          loadedTexturesRef.current.push(tiled);
+          // aoMap requires a second UV channel in Three.js; our procedural
+          // geometries only have one, so reuse it as uv2 -- a well-known
+          // workaround, not mathematically perfect UV unwrapping, but far
+          // better than aoMap silently doing nothing.
+          if (geometry.attributes.uv && !geometry.attributes.uv2) {
+            geometry.setAttribute('uv2', geometry.attributes.uv);
+          }
+        }
+
+        const material = new THREE.MeshStandardMaterial(materialOptions);
         const mesh = new THREE.Mesh(geometry, material);
         mesh.position.set(...part.position);
         mesh.rotation.set(...part.rotation);
@@ -232,12 +286,10 @@ export default function MeshViewer({ spec, isLoading, textureUrl }: MeshViewerPr
     return () => {
       active = false;
       cleanupPrevious();
-      if (textureRef.current) {
-        textureRef.current.dispose();
-        textureRef.current = null;
-      }
+      loadedTexturesRef.current.forEach((t) => t.dispose());
+      loadedTexturesRef.current = [];
     };
-  }, [spec, textureUrl]);
+  }, [spec, textureMaps]);
 
   return (
     <div ref={containerRef} className="mesh-viewer">

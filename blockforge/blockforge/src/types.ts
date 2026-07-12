@@ -41,6 +41,16 @@ export interface AssetFile {
   type?: string;
 }
 
+// Real, individually-classified PBR map URLs for an asset -- as opposed to
+// AssetFile[], which is just "here's a pile of links, good luck." Only
+// populate a field when you actually have a URL for that specific map type.
+export interface TextureMapSet {
+  diffuse?: string;
+  normal?: string;
+  roughness?: string;
+  ao?: string;
+}
+
 export interface AssetSearchResult {
   source: AssetSource;
   id: string;
@@ -52,6 +62,12 @@ export interface AssetSearchResult {
   maxResolution?: [number, number];
   downloadCount?: number;
   files?: AssetFile[];
+  // Populated for ambientCG results directly from search (their API exposes
+  // per-map download links up front). PolyHaven results leave this undefined
+  // from search -- PolyHaven's search endpoint never includes map URLs, only
+  // a second call to /files/{id} does, so that's fetched on demand only for
+  // the one asset actually chosen (see services/assetAPI.ts fetchPolyHavenMaps).
+  maps?: TextureMapSet;
   raw?: unknown;
 }
 
