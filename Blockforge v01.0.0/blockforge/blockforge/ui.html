@@ -1,0 +1,354 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<title>BlockForge — UI Preview</title>
+<style>
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; background: #050810; color: #e2e8f0; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
+  .app { display: flex; height: 100vh; overflow: hidden; }
+
+  .sidebar { width: 260px; flex-shrink: 0; background: linear-gradient(180deg, rgba(15,23,42,0.92), rgba(15,23,42,0.76)); border-right: 1px solid rgba(255,255,255,0.08); padding: 20px; display: flex; flex-direction: column; overflow: hidden; }
+  .brand { display: flex; align-items: center; gap: 12px; margin-bottom: 22px; }
+  .brand-mark { width: 6px; height: 34px; border-radius: 4px; background: #38bdf8; box-shadow: 0 0 16px #38bdf8; }
+  .brand-name { font-weight: 800; font-size: 16px; letter-spacing: -0.02em; }
+  .brand-tagline { font-size: 10px; color: rgba(226,232,240,0.5); }
+  .banner { font-size: 10px; color: #7dd3fc; background: rgba(56,189,248,0.08); border: 1px solid rgba(56,189,248,0.2); border-radius: 10px; padding: 8px 10px; margin-bottom: 18px; line-height: 1.4; }
+  .sidebar-label { font-size: 9px; font-weight: 700; letter-spacing: 0.2em; text-transform: uppercase; color: rgba(226,232,240,0.35); margin-bottom: 10px; }
+  .gallery-list { overflow-y: auto; display: flex; flex-direction: column; gap: 6px; }
+  .gallery-item { display: flex; align-items: center; gap: 10px; padding: 8px 10px; border-radius: 12px; cursor: pointer; background: rgba(255,255,255,0.03); border: 1px solid transparent; }
+  .gallery-item:hover { background: rgba(255,255,255,0.06); }
+  .gallery-item.active { border-color: rgba(56,189,248,0.5); background: rgba(56,189,248,0.08); }
+  .swatch { width: 20px; height: 20px; border-radius: 6px; flex-shrink: 0; box-shadow: inset 0 0 0 1px rgba(255,255,255,0.15); }
+  .gallery-item-name { font-size: 12px; font-weight: 600; text-transform: capitalize; }
+  .gallery-item-prompt { font-size: 10px; color: rgba(226,232,240,0.4); }
+
+  .main { flex: 1; display: flex; flex-direction: column; position: relative; padding: 20px; gap: 14px; min-width: 0; }
+  .prompt-bar { display: flex; gap: 10px; }
+  .prompt-input { flex: 1; background: rgba(255,255,255,0.05); border: 1px solid rgba(255,255,255,0.1); border-radius: 14px; padding: 14px 18px; color: #fff; font-size: 14px; font-family: inherit; outline: none; }
+  .prompt-input:focus { border-color: rgba(56,189,248,0.5); }
+  .prompt-button { background: linear-gradient(135deg, #38bdf8, #60a5fa); color: #050810; border: none; border-radius: 14px; padding: 0 26px; font-weight: 800; font-size: 12px; letter-spacing: 0.05em; text-transform: uppercase; cursor: pointer; box-shadow: 0 14px 30px rgba(56,189,248,0.18); transition: transform 0.2s ease, box-shadow 0.2s ease; }
+  .prompt-button:hover:not(:disabled) { transform: translateY(-1px); box-shadow: 0 18px 34px rgba(56,189,248,0.22); }
+  .prompt-button:disabled { opacity: 0.4; cursor: default; }
+  .quick-picks { display: flex; flex-wrap: wrap; gap: 8px; }
+  .chip { background: rgba(255,255,255,0.04); border: 1px solid rgba(255,255,255,0.08); color: rgba(226,232,240,0.7); border-radius: 999px; padding: 6px 14px; font-size: 11px; cursor: pointer; text-transform: capitalize; }
+  .chip:hover { background: rgba(255,255,255,0.08); color: #fff; }
+  .chip:disabled { opacity: 0.4; cursor: default; }
+
+  .mesh-viewer { flex: 1; position: relative; border-radius: 20px; overflow: hidden; border: 1px solid rgba(96,165,250,0.18); box-shadow: inset 0 0 0 1px rgba(255,255,255,0.03), 0 32px 120px rgba(0,0,0,0.18); min-height: 0; }
+  .mesh-viewer canvas { display: block; }
+  .viewer-overlay { position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 12px; pointer-events: none; background: linear-gradient(180deg, rgba(5,8,16,0.3), rgba(5,8,16,0.7)); }
+  .viewer-overlay.idle { background: transparent; }
+  .overlay-label { font-size: 12px; color: rgba(226,232,240,0.6); }
+  .spinner { width: 26px; height: 26px; border-radius: 50%; border: 2px solid rgba(56,189,248,0.2); border-top-color: #38bdf8; animation: spin 0.8s linear infinite; }
+  @keyframes spin { to { transform: rotate(360deg); } }
+
+  .research-panel { background: rgba(15,23,42,0.6); border: 1px solid rgba(255,255,255,0.08); border-radius: 16px; padding: 14px 18px; }
+  .research-title { font-weight: 700; font-size: 14px; text-transform: capitalize; margin-bottom: 4px; }
+  .research-note { font-size: 12px; color: rgba(226,232,240,0.65); line-height: 1.5; }
+  .research-meta { margin-top: 6px; font-size: 10px; color: rgba(226,232,240,0.35); text-transform: uppercase; letter-spacing: 0.08em; }
+</style>
+</head>
+<body>
+
+<div class="app">
+  <aside class="sidebar">
+    <div class="brand">
+      <div class="brand-mark"></div>
+      <div>
+        <div class="brand-name">BlockForge</div>
+        <div class="brand-tagline">AI material &amp; shape research</div>
+      </div>
+    </div>
+    <div class="banner">UI preview — using canned mesh specs instead of a live AI call. Try the real app for arbitrary objects.</div>
+    <div class="sidebar-label">Gallery</div>
+    <div class="gallery-list" id="galleryList"></div>
+  </aside>
+
+  <main class="main">
+    <div class="prompt-bar">
+      <input class="prompt-input" id="promptInput" placeholder="Try: brick, wooden door, egg, stone wall, roof tile, garden fence…" />
+      <button class="prompt-button" id="generateBtn">Design it</button>
+    </div>
+    <div class="quick-picks" id="quickPicks"></div>
+    <div class="mesh-viewer" id="viewerContainer">
+      <div class="viewer-overlay idle" id="viewerOverlay"><div class="overlay-label">Type an object above to design it</div></div>
+    </div>
+    <div class="research-panel" id="researchPanel" style="display:none;">
+      <div class="research-title" id="researchTitle"></div>
+      <div class="research-note" id="researchNote"></div>
+      <div class="research-meta" id="researchMeta"></div>
+    </div>
+  </main>
+</div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+<script>
+// ---- Canned mesh specs standing in for real AI responses ----
+const SPECS = {
+  'brick': {
+    objectName: 'Brick',
+    materialResearch: 'Fired clay brick: high roughness, near-zero metalness, warm oxidized red-orange tone from iron content in the clay.',
+    parts: [
+      { geometry: 'box', args: [0.9, 0.42, 0.44], position: [0, 0.21, 0], rotation: [0,0,0], material: { color: '#9c4a30', roughness: 0.92, metalness: 0.04 } }
+    ]
+  },
+  'wooden door': {
+    objectName: 'Wooden Door',
+    materialResearch: 'Solid oak plank door with a darker stained frame; medium roughness with a faint sheen from varnish, brass hardware for contrast.',
+    parts: [
+      { geometry: 'box', args: [1.05, 2.1, 0.12], position: [0, 1.05, 0], rotation: [0,0,0], material: { color: '#4a2f1c', roughness: 0.5, metalness: 0.1 } },
+      { geometry: 'box', args: [0.9, 1.9, 0.06], position: [0, 1.05, 0.06], rotation: [0,0,0], material: { color: '#7a4a2a', roughness: 0.6, metalness: 0.05 } },
+      { geometry: 'sphere', args: [0.045, 16, 16], position: [0.35, 1.05, 0.12], rotation: [0,0,0], material: { color: '#d4af37', roughness: 0.3, metalness: 0.8 } }
+    ]
+  },
+  'egg': {
+    objectName: 'Egg',
+    materialResearch: 'Calcium carbonate eggshell: smooth matte surface, very low reflectivity, soft off-white with a faint warm tint.',
+    parts: [
+      { geometry: 'sphere', args: [0.42, 32, 32], position: [0, 0.5, 0], rotation: [0,0,0], material: { color: '#f3ead9', roughness: 0.55, metalness: 0.02 } }
+    ]
+  },
+  'stone wall': {
+    objectName: 'Stone Wall',
+    materialResearch: 'Uneven fieldstone blocks: rough matte granite tones, irregular sizing and stacking, zero metalness, mortar-grey undertones.',
+    parts: [
+      { geometry: 'box', args: [1.0, 0.5, 0.5], position: [-0.5, 0.25, 0], rotation: [0,0.05,0], material: { color: '#6b7280', roughness: 0.95, metalness: 0.02 } },
+      { geometry: 'box', args: [0.9, 0.48, 0.48], position: [0.5, 0.24, 0], rotation: [0,-0.04,0], material: { color: '#5f6773', roughness: 0.9, metalness: 0.02 } },
+      { geometry: 'box', args: [0.85, 0.5, 0.5], position: [-0.55, 0.75, 0], rotation: [0,-0.03,0], material: { color: '#71798a', roughness: 0.92, metalness: 0.02 } },
+      { geometry: 'box', args: [0.95, 0.5, 0.48], position: [0.45, 0.75, 0], rotation: [0,0.04,0], material: { color: '#666e79', roughness: 0.9, metalness: 0.03 } },
+      { geometry: 'box', args: [1.7, 0.48, 0.5], position: [0, 1.24, 0], rotation: [0,0,0], material: { color: '#5c636e', roughness: 0.93, metalness: 0.02 } }
+    ]
+  },
+  'roof tile': {
+    objectName: 'Roof Tile',
+    materialResearch: 'Curved terracotta roof tile: fired clay with a slight glossy glaze, moderate roughness, deep clay-red with faint gloss highlights.',
+    parts: [
+      { geometry: 'cylinder', args: [0.28, 0.28, 0.9, 16, 1, false, 0, Math.PI], position: [0, 0.1, 0], rotation: [0,0,Math.PI/2], material: { color: '#b0492e', roughness: 0.55, metalness: 0.08 } }
+    ]
+  },
+  'garden fence': {
+    objectName: 'Garden Fence',
+    materialResearch: 'Weathered pine pickets and rails: high roughness matte wood, greyish-brown from sun exposure, zero metalness.',
+    parts: [
+      { geometry: 'box', args: [0.08, 0.9, 0.08], position: [-0.7, 0.45, 0], rotation: [0,0,0], material: { color: '#7a6a52', roughness: 0.85, metalness: 0.02 } },
+      { geometry: 'box', args: [0.08, 0.9, 0.08], position: [0, 0.45, 0], rotation: [0,0,0], material: { color: '#7a6a52', roughness: 0.85, metalness: 0.02 } },
+      { geometry: 'box', args: [0.08, 0.9, 0.08], position: [0.7, 0.45, 0], rotation: [0,0,0], material: { color: '#7a6a52', roughness: 0.85, metalness: 0.02 } },
+      { geometry: 'box', args: [1.6, 0.08, 0.06], position: [0, 0.65, 0], rotation: [0,0,0], material: { color: '#8f7c60', roughness: 0.8, metalness: 0.02 } },
+      { geometry: 'box', args: [1.6, 0.08, 0.06], position: [0, 0.25, 0], rotation: [0,0,0], material: { color: '#8f7c60', roughness: 0.8, metalness: 0.02 } }
+    ]
+  }
+};
+const QUICK_PICKS = Object.keys(SPECS);
+
+function fallbackSpec(name) {
+  return {
+    objectName: name,
+    materialResearch: "Demo mode doesn't have a canned design for this one — connect a real AI backend to research arbitrary objects precisely. Showing a placeholder block instead.",
+    parts: [{ geometry: 'box', args: [0.6, 0.6, 0.6], position: [0, 0.3, 0], rotation: [0,0,0], material: { color: '#6366f1', roughness: 0.5, metalness: 0.3 } }]
+  };
+}
+
+// ---- Three.js viewer (mirrors src/components/MeshViewer.tsx) ----
+const container = document.getElementById('viewerContainer');
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0x0b0f1a);
+scene.fog = new THREE.FogExp2(0x0b0f1a, 0.035);
+
+const camera = new THREE.PerspectiveCamera(42, container.clientWidth / container.clientHeight, 0.1, 200);
+const renderer = new THREE.WebGLRenderer({ antialias: true });
+renderer.setSize(container.clientWidth, container.clientHeight);
+renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+renderer.shadowMap.enabled = true;
+container.appendChild(renderer.domElement);
+
+scene.add(new THREE.AmbientLight(0x334155, 0.7));
+const key = new THREE.DirectionalLight(0xffffff, 1.1);
+key.position.set(4, 6, 4);
+key.castShadow = true;
+scene.add(key);
+const rim = new THREE.PointLight(0x38bdf8, 1.2, 20);
+rim.position.set(-3, 3, -3);
+scene.add(rim);
+
+const platform = new THREE.Mesh(
+  new THREE.CylinderGeometry(2.4, 2.4, 0.15, 48),
+  new THREE.MeshStandardMaterial({ color: 0x111827, roughness: 0.9, metalness: 0.1 })
+);
+platform.position.y = -0.075;
+platform.receiveShadow = true;
+scene.add(platform);
+
+const ring = new THREE.Mesh(
+  new THREE.RingGeometry(2.35, 2.42, 64),
+  new THREE.MeshBasicMaterial({ color: 0x38bdf8, side: THREE.DoubleSide, transparent: true, opacity: 0.5 })
+);
+ring.rotation.x = -Math.PI / 2;
+ring.position.y = 0.001;
+scene.add(ring);
+
+const group = new THREE.Group();
+scene.add(group);
+
+const camState = { angle: 0.6, elevation: 0.45, dist: 6 };
+let dragging = false, lastX = 0, lastY = 0;
+renderer.domElement.addEventListener('pointerdown', e => { dragging = true; lastX = e.clientX; lastY = e.clientY; });
+window.addEventListener('pointerup', () => dragging = false);
+window.addEventListener('pointermove', e => {
+  if (!dragging) return;
+  camState.angle -= (e.clientX - lastX) * 0.006;
+  camState.elevation = Math.max(0.1, Math.min(1.4, camState.elevation - (e.clientY - lastY) * 0.006));
+  lastX = e.clientX; lastY = e.clientY;
+});
+renderer.domElement.addEventListener('wheel', e => {
+  camState.dist = Math.max(2.5, Math.min(16, camState.dist + e.deltaY * 0.01));
+});
+window.addEventListener('resize', () => {
+  camera.aspect = container.clientWidth / container.clientHeight;
+  camera.updateProjectionMatrix();
+  renderer.setSize(container.clientWidth, container.clientHeight);
+});
+
+function buildGeometry(part) {
+  switch (part.geometry) {
+    case 'box': return new THREE.BoxGeometry(...part.args.slice(0,3));
+    case 'cylinder': return new THREE.CylinderGeometry(...part.args.slice(0,4));
+    case 'cone': return new THREE.ConeGeometry(...part.args.slice(0,3));
+    case 'sphere': return new THREE.SphereGeometry(...part.args.slice(0,3));
+    case 'torus': return new THREE.TorusGeometry(...part.args.slice(0,4));
+    default: return new THREE.BoxGeometry(0.5,0.5,0.5);
+  }
+}
+
+function renderSpec(spec) {
+  while (group.children.length) {
+    const c = group.children.pop();
+    c.geometry.dispose(); c.material.dispose();
+  }
+  let maxHeight = 0;
+  for (const part of spec.parts) {
+    const geo = buildGeometry(part);
+    const mat = new THREE.MeshStandardMaterial({
+      color: part.material.color, roughness: part.material.roughness, metalness: part.material.metalness,
+      emissive: part.material.emissive || '#000000', emissiveIntensity: part.material.emissiveIntensity || 0
+    });
+    const mesh = new THREE.Mesh(geo, mat);
+    mesh.position.set(...part.position);
+    mesh.rotation.set(...part.rotation);
+    mesh.castShadow = true; mesh.receiveShadow = true;
+    mesh.scale.set(0.01, 0.01, 0.01);
+    group.add(mesh);
+    maxHeight = Math.max(maxHeight, part.position[1] + 1);
+  }
+  camState.dist = Math.max(3, Math.min(12, maxHeight * 2.5));
+  let s = 0.01;
+  const grow = () => {
+    s = Math.min(1, s + 0.09);
+    group.children.forEach(m => m.scale.set(s, s, s));
+    if (s < 1) requestAnimationFrame(grow);
+  };
+  grow();
+}
+
+(function animate() {
+  requestAnimationFrame(animate);
+  if (!dragging) camState.angle += 0.0025;
+  const { angle, elevation, dist } = camState;
+  camera.position.set(dist*Math.cos(angle)*Math.cos(elevation), dist*Math.sin(elevation)+0.4, dist*Math.sin(angle)*Math.cos(elevation));
+  camera.lookAt(0, 0.6, 0);
+  ring.rotation.z += 0.001;
+  renderer.render(scene, camera);
+})();
+
+// ---- App state / UI wiring (mirrors src/App.tsx) ----
+const overlay = document.getElementById('viewerOverlay');
+const promptInput = document.getElementById('promptInput');
+const generateBtn = document.getElementById('generateBtn');
+const quickPicksEl = document.getElementById('quickPicks');
+const researchPanel = document.getElementById('researchPanel');
+const researchTitle = document.getElementById('researchTitle');
+const researchNote = document.getElementById('researchNote');
+const researchMeta = document.getElementById('researchMeta');
+const galleryList = document.getElementById('galleryList');
+
+let gallery = [];
+let activeId = null;
+let isLoading = false;
+
+QUICK_PICKS.forEach(label => {
+  const btn = document.createElement('button');
+  btn.className = 'chip';
+  btn.textContent = label;
+  btn.onclick = () => { promptInput.value = label; generate(label); };
+  quickPicksEl.appendChild(btn);
+});
+
+function setLoading(loading) {
+  isLoading = loading;
+  generateBtn.disabled = loading || !promptInput.value.trim();
+  generateBtn.textContent = loading ? 'Designing…' : 'Design it';
+  Array.from(quickPicksEl.children).forEach(c => c.disabled = loading);
+  if (loading) {
+    overlay.style.display = 'flex';
+    overlay.classList.remove('idle');
+    overlay.innerHTML = '<div class="spinner"></div><div class="overlay-label">Researching material &amp; shape…</div>';
+  } else {
+    overlay.style.display = 'none';
+  }
+}
+
+function renderGallery() {
+  galleryList.innerHTML = '';
+  if (gallery.length === 0) {
+    galleryList.innerHTML = '<div style="font-size:12px;color:rgba(226,232,240,0.35);line-height:1.5;">Designed objects will appear here.</div>';
+    return;
+  }
+  gallery.forEach(entry => {
+    const item = document.createElement('div');
+    item.className = 'gallery-item' + (entry.id === activeId ? ' active' : '');
+    item.innerHTML = `<div class="swatch" style="background:${entry.spec.parts[0]?.material.color || '#8899aa'}"></div>
+      <div><div class="gallery-item-name">${entry.spec.objectName}</div><div class="gallery-item-prompt">${entry.prompt}</div></div>`;
+    item.onclick = () => selectEntry(entry);
+    galleryList.appendChild(item);
+  });
+}
+
+function selectEntry(entry) {
+  activeId = entry.id;
+  promptInput.value = entry.prompt;
+  renderSpec(entry.spec);
+  showResearch(entry.spec);
+  renderGallery();
+}
+
+function showResearch(spec) {
+  researchPanel.style.display = 'block';
+  researchTitle.textContent = spec.objectName;
+  researchNote.textContent = spec.materialResearch;
+  researchMeta.textContent = `${spec.parts.length} part${spec.parts.length === 1 ? '' : 's'}`;
+}
+
+async function generate(overridePrompt) {
+  const description = (overridePrompt ?? promptInput.value).trim();
+  if (!description || isLoading) return;
+  setLoading(true);
+  await new Promise(r => setTimeout(r, 650 + Math.random() * 400));
+  const spec = SPECS[description.toLowerCase()] || fallbackSpec(description);
+  const entry = { id: Date.now() + '-' + Math.random().toString(36).slice(2), prompt: description, spec, createdAt: Date.now() };
+  gallery = [entry, ...gallery].slice(0, 50);
+  activeId = entry.id;
+  renderSpec(spec);
+  showResearch(spec);
+  renderGallery();
+  setLoading(false);
+}
+
+generateBtn.onclick = () => generate();
+promptInput.addEventListener('keydown', e => { if (e.key === 'Enter') generate(); });
+promptInput.addEventListener('input', () => { generateBtn.disabled = isLoading || !promptInput.value.trim(); });
+
+renderGallery();
+generateBtn.disabled = true;
+</script>
+</body>
+</html>
