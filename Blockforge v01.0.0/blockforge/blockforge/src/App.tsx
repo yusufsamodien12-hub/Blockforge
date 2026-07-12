@@ -82,9 +82,10 @@ export default function App() {
   // (e.g. World-Agent), so this UI can show a live "agent is using this
   // tool" indicator. Only surfaces activity from the last 15 seconds.
   useEffect(() => {
-    const proxyUrl = (import.meta as any)?.env?.VITE_PROXY_URL as string | undefined;
-    if (!proxyUrl) return;
-    const activityUrl = proxyUrl.replace(/\/v1\/chat\/completions$/, '/agent-activity');
+    const proxyUrl = import.meta.env.VITE_PROXY_URL as string | undefined;
+    const activityUrl = proxyUrl
+      ? proxyUrl.replace(/\/v1\/chat\/completions$/, '/agent-activity')
+      : 'https://blockforge.yusufsamodien12.workers.dev/agent-activity';
 
     let cancelled = false;
     async function poll() {
@@ -271,37 +272,43 @@ export default function App() {
 
       <main className="main">
         <div className="main-header">
+          {agentActivity && (
+            <div className="agent-control-note">
+              🤖 Design controls are currently delegated to <strong>{agentActivity.source}</strong>
+            </div>
+          )}
           <div className="prompt-bar">
             <input
               className="prompt-input"
-              placeholder="What should BlockForge design? e.g. 'clay roof tile'"
+              placeholder={agentActivity ? 'Controlled by agent — manual input disabled' : "What should BlockForge design? e.g. 'clay roof tile'"}
               value={prompt}
               onChange={(e) => setPrompt(e.target.value)}
               onKeyDown={(e) => { if (e.key === 'Enter') handleGenerate(); }}
+              disabled={!!agentActivity}
             />
-            <button className="prompt-button" onClick={() => handleGenerate()} disabled={isLoading || !prompt.trim()}>
+            <button className="prompt-button" onClick={() => handleGenerate()} disabled={isLoading || !prompt.trim() || !!agentActivity}>
               {isLoading ? 'Designing…' : 'Design it'}
             </button>
           </div>
 
 
           <div className="filter-bar">
-            <select className="filter-select" value={size} onChange={(e) => setSize(e.target.value as typeof size)}>
+            <select className="filter-select" value={size} onChange={(e) => setSize(e.target.value as typeof size)} disabled={!!agentActivity}>
               {SIZE_OPTIONS.map((option) => (
                 <option key={option} value={option}>{option === 'any' ? 'Any size' : `${option.charAt(0).toUpperCase() + option.slice(1)} size`}</option>
               ))}
             </select>
-            <select className="filter-select" value={color} onChange={(e) => setColor(e.target.value as typeof color)}>
+            <select className="filter-select" value={color} onChange={(e) => setColor(e.target.value as typeof color)} disabled={!!agentActivity}>
               {COLOR_OPTIONS.map((option) => (
                 <option key={option} value={option}>{option === 'any' ? 'Any color' : `${option.charAt(0).toUpperCase() + option.slice(1)} color`}</option>
               ))}
             </select>
-            <select className="filter-select" value={material} onChange={(e) => setMaterial(e.target.value as typeof material)}>
+            <select className="filter-select" value={material} onChange={(e) => setMaterial(e.target.value as typeof material)} disabled={!!agentActivity}>
               {MATERIAL_OPTIONS.map((option) => (
                 <option key={option} value={option}>{option === 'any' ? 'Any material' : `${option.charAt(0).toUpperCase() + option.slice(1)}`}</option>
               ))}
             </select>
-            <select className="filter-select" value={tool} onChange={(e) => setTool(e.target.value as typeof tool)}>
+            <select className="filter-select" value={tool} onChange={(e) => setTool(e.target.value as typeof tool)} disabled={!!agentActivity}>
               {TOOL_OPTIONS.map((option) => (
                 <option key={option} value={option}>
                   {option === 'auto'
@@ -312,7 +319,7 @@ export default function App() {
                 </option>
               ))}
             </select>
-            <select className="filter-select" value={skill} onChange={(e) => setSkill(e.target.value as typeof skill)}>
+            <select className="filter-select" value={skill} onChange={(e) => setSkill(e.target.value as typeof skill)} disabled={!!agentActivity}>
               {SKILL_OPTIONS.map((option) => (
                 <option key={option} value={option}>
                   {option === 'auto'
@@ -328,6 +335,7 @@ export default function App() {
               placeholder="Extra feature (textured, hollow, beveled, embossed)"
               value={extraFeature}
               onChange={(e) => setExtraFeature(e.target.value)}
+              disabled={!!agentActivity}
             />
           </div>
 
@@ -336,6 +344,7 @@ export default function App() {
               <button
                 key={label}
                 className="quick-pick-chip"
+                disabled={!!agentActivity}
                 onClick={() => { setPrompt(label); handleGenerate(label); }}
                 disabled={isLoading}
               >

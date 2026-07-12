@@ -547,6 +547,25 @@ html, body, #root {
   animation: agent-pulse 2s ease-in-out infinite;
 }
 
+.agent-control-note {
+  background: rgba(56, 189, 248, 0.1);
+  border: 1px solid rgba(56, 189, 248, 0.25);
+  color: #7dd3fc;
+  border-radius: 10px;
+  padding: 6px 12px;
+  font-size: 11px;
+  margin-bottom: 10px;
+  animation: agent-pulse 2s ease-in-out infinite;
+}
+
+.prompt-input:disabled,
+.filter-select:disabled,
+.filter-input:disabled,
+.quick-pick-chip:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
 @keyframes agent-pulse {
   0%, 100% { opacity: 1; }
   50% { opacity: 0.6; }
