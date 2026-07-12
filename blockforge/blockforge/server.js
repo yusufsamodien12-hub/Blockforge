@@ -61,10 +61,32 @@ function normalizePolyHavenAsset(id, asset) {
   };
 }
 
+async function fetchPolyHavenTextureUrl(assetId) {
+  try {
+    const res = await fetch(`https://api.polyhaven.com/files/${assetId}`, {
+      headers: { 'User-Agent': API_USER_AGENT, 'Accept': 'application/json' },
+    });
+    if (!res.ok) return null;
+    const files = await res.json();
+    const diffuse = files?.Diffuse || files?.diffuse;
+    if (!diffuse) return null;
+    const res2k = diffuse['2k'] || diffuse['1k'] || diffuse['4k'];
+    if (!res2k) return null;
+    const jpg = res2k.jpg || res2k.png;
+    return jpg?.url || null;
+  } catch {
+    return null;
+  }
+}
+
 function buildPolyHavenAssetFiles(id, asset) {
   const safeId = id.toLowerCase().replace(/\s+/g, '_').replace(/[^a-z0-9_]/g, '');
   const assetId = safeId || id;
-  return [{ url: `https://polyhaven.com/a/${assetId}`, type: 'page' }];
+  const files = [{ url: `https://polyhaven.com/a/${assetId}`, type: 'page' }];
+  if (typeof asset._textureUrl === 'string') {
+    files.unshift({ url: asset._textureUrl, type: 'diffuse' });
+  }
+  return files;
 }
 
 function normalizeAmbientCGAsset(id, asset) {
@@ -136,9 +158,8 @@ async function searchPolyHavenAssets(query) {
     return [];
   }
 
-  const entries = Object.entries(json)
-    .map(([id, asset]) => normalizePolyHavenAsset(id, asset))
-    .filter((asset) => {
+  const rawEntries = Object.entries(json)
+    .filter(([id, asset]) => {
       if (!query) return true;
       const normalizedQuery = query.toLowerCase();
       return [asset.name, ...(asset.tags ?? []), ...(asset.categories ?? [])].some((value) =>
@@ -146,6 +167,14 @@ async function searchPolyHavenAssets(query) {
       );
     })
     .slice(0, 12);
+
+  const entries = await Promise.all(
+    rawEntries.map(async ([id, asset]) => {
+      const textureUrl = await fetchPolyHavenTextureUrl(id);
+      if (textureUrl) asset._textureUrl = textureUrl;
+      return normalizePolyHavenAsset(id, asset);
+    })
+  );
 
   return entries;
 }

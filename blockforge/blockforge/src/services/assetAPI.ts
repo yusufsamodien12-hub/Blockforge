@@ -16,9 +16,30 @@ function normalizePolyHavenAsset(id: string, asset: any): AssetSearchResult {
   };
 }
 
+async function fetchPolyHavenTextureUrl(assetId: string): Promise<string | null> {
+  try {
+    const res = await fetch(`https://api.polyhaven.com/files/${assetId}`, {
+      headers: { 'Accept': 'application/json' },
+    });
+    if (!res.ok) return null;
+    const files = await res.json();
+    const diffuse = files?.Diffuse || files?.diffuse;
+    if (!diffuse) return null;
+    const res2k = diffuse['2k'] || diffuse['1k'] || diffuse['4k'];
+    if (!res2k) return null;
+    const jpg = res2k?.jpg || res2k?.png;
+    return jpg?.url || null;
+  } catch {
+    return null;
+  }
+}
+
 function buildPolyHavenAssetFiles(id: string, asset: any): { url: string; type?: string; size?: number }[] {
   const files: { url: string; type?: string; size?: number }[] = [];
   files.push({ url: `https://polyhaven.com/a/${encodeURIComponent(id)}`, type: 'page' });
+  if (typeof asset._textureUrl === 'string') {
+    files.unshift({ url: asset._textureUrl, type: 'diffuse' });
+  }
   return files;
 }
 
@@ -60,7 +81,14 @@ async function fetchPolyHavenDirect(query: string): Promise<AssetSearchResponse>
   }
 
   const json = await response.json();
-  let results: AssetSearchResult[] = Object.entries(json || {}).map(([id, asset]) => normalizePolyHavenAsset(id, asset));
+  const rawEntries = Object.entries(json || {});
+  const results: AssetSearchResult[] = await Promise.all(
+    rawEntries.map(async ([id, asset]: [string, any]) => {
+      const textureUrl = await fetchPolyHavenTextureUrl(id);
+      if (textureUrl) asset._textureUrl = textureUrl;
+      return normalizePolyHavenAsset(id, asset);
+    })
+  );
 
   if (trimmedQuery && results.length === 0) {
     const fallbackUrl = new URL(baseUrl);
@@ -74,7 +102,14 @@ async function fetchPolyHavenDirect(query: string): Promise<AssetSearchResponse>
       throw new Error(`PolyHaven fallback fetch failed with status ${fallbackResp.status}`);
     }
     const fallbackJson = await fallbackResp.json();
-    const allResults = Object.entries(fallbackJson || {}).map(([id, asset]) => normalizePolyHavenAsset(id, asset));
+    const fallbackRaw = Object.entries(fallbackJson || {});
+    const allResults = await Promise.all(
+      fallbackRaw.map(async ([id, asset]: [string, any]) => {
+        const textureUrl = await fetchPolyHavenTextureUrl(id);
+        if (textureUrl) asset._textureUrl = textureUrl;
+        return normalizePolyHavenAsset(id, asset);
+      })
+    );
     results = filterPolyHavenResults(allResults, trimmedQuery);
   }
 

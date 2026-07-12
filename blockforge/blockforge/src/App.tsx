@@ -324,7 +324,7 @@ export default function App() {
 
           {assetResults.length > 0 && (
             <div className="asset-results-panel">
-              <div className="research-title">Textures used from PolyHaven / ambientCG</div>
+              <div className="research-title">Texture search results (first match applied)</div>
               <div className="asset-results-grid">
                 {assetResults.map((asset) => (
                   <div key={`${asset.source}-${asset.id}`} className="asset-result-card">

@@ -184,7 +184,7 @@ export default function MeshViewer({ spec, isLoading, textureUrl }: MeshViewerPr
           if (!active) return;
           texture.wrapS = THREE.RepeatWrapping;
           texture.wrapT = THREE.RepeatWrapping;
-          texture.repeat.set(1, 1);
+          texture.repeat.set(3, 3);
           texture.anisotropy = 16;
           textureRef.current = texture;
         } catch {

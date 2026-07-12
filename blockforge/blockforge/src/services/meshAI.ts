@@ -174,7 +174,7 @@ function extractJson(text: string): unknown {
 export async function generateMesh(objectDescription: string): Promise<GenerateMeshResult> {
   const envProxyUrl = (import.meta as any)?.env?.VITE_PROXY_URL as string | undefined;
   const directKey = (import.meta as any)?.env?.VITE_MISTRAL_API_KEY as string | undefined;
-  const proxyUrl = envProxyUrl ?? '/api/mistral/chat';
+  const proxyUrl = directKey ? undefined : (envProxyUrl ?? '/api/mistral/chat');
 
   const prompt = `Design a precise 3D mesh for: "${objectDescription.trim()}"`;
   let responseText: string;
