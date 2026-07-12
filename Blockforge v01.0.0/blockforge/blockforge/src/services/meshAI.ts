@@ -175,9 +175,9 @@ function extractJson(text: string): unknown {
 // this app can reuse the same Cloudflare Worker proxy (or local server.js)
 // world26 already uses -- no new backend required.
 export async function generateMesh(objectDescription: string): Promise<GenerateMeshResult> {
-  const envProxyUrl = (import.meta as any)?.env?.VITE_PROXY_URL as string | undefined;
-  const proxyFormat = (import.meta as any)?.env?.VITE_PROXY_FORMAT as string | undefined;
-  const directKey = (import.meta as any)?.env?.VITE_MISTRAL_API_KEY as string | undefined;
+  const envProxyUrl = import.meta.env.VITE_PROXY_URL as string | undefined;
+  const proxyFormat = import.meta.env.VITE_PROXY_FORMAT as string | undefined;
+  const directKey = import.meta.env.VITE_MISTRAL_API_KEY as string | undefined;
   const proxyUrl = envProxyUrl ?? (directKey ? undefined : '/api/mistral/chat');
 
   const prompt = `Design a precise 3D mesh for: "${objectDescription.trim()}"`;
