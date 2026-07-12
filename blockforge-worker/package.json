@@ -1,0 +1,20 @@
+{
+	"name": "blockforge-worker",
+	"description": "BlockForge API Proxy - Mistral AI proxy + /design mesh generation endpoint",
+	"version": "1.0.0",
+	"type": "module",
+	"scripts": {
+		"deploy": "wrangler deploy",
+		"dev": "wrangler dev",
+		"cf-typegen": "wrangler types",
+		"logs": "wrangler tail",
+		"secret:set": "wrangler secret put MISTRAL_API_KEY"
+	},
+	"dependencies": {
+		"hono": "4.11.1"
+	},
+	"devDependencies": {
+		"typescript": "5.9.3",
+		"wrangler": "4.110.0"
+	}
+}
