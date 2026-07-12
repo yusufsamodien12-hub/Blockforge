@@ -76,10 +76,11 @@ async function fetchPolyHavenDirect(query: string): Promise<AssetSearchResponse>
     results = filterPolyHavenResults(allResults, trimmedQuery);
   }
 
-  return {
-    results: results.slice(0, 24),
-    errors: { fallback: 'PolyHaven direct fallback used' },
-  };
+  const payload: AssetSearchResponse = { results: results.slice(0, 24) };
+  if (trimmedQuery && results.length === 0) {
+    payload.errors = { fallback: 'PolyHaven direct fallback used' };
+  }
+  return payload;
 }
 
 export async function searchAssets(query: string): Promise<AssetSearchResponse> {
@@ -104,11 +105,12 @@ export async function searchAssets(query: string): Promise<AssetSearchResponse> 
 
     return response.json();
   } catch (error) {
-    if (error instanceof Error && /404/.test(error.message)) {
+    const is404 = error instanceof Error && /404/.test(error.message);
+    const isNetwork = error instanceof Error && /Failed to fetch|network|ECONNREFUSED|ENOTFOUND/i.test(error.message);
+    if (is404 || isNetwork) {
       return fetchPolyHavenDirect(query);
     }
-    // If the proxy route is unavailable, fall back to direct PolyHaven search.
-    return fetchPolyHavenDirect(query);
+    throw error;
   }
 }
 

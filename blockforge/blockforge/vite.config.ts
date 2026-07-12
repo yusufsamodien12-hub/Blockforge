@@ -13,6 +13,7 @@ export default defineConfig(({ mode }) => {
     base: isProd ? '/blockforge/' : '/',
     envPrefix: 'VITE_',
     server: {
+      strictPort: true,
       port: 4100,
       host: '0.0.0.0',
       proxy: {

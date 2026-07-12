@@ -16,7 +16,21 @@ const QUICK_PICKS = ['brick', 'wooden door', 'egg', 'stone wall', 'roof tile', '
 function loadGallery(): GalleryEntry[] {
   try {
     const raw = localStorage.getItem(STORAGE_KEY);
-    return raw ? JSON.parse(raw) : [];
+    if (!raw) return [];
+    const parsed = JSON.parse(raw);
+    if (!Array.isArray(parsed)) return [];
+    return parsed.filter((entry) => {
+      return (
+        entry &&
+        typeof entry === 'object' &&
+        typeof entry.id === 'string' &&
+        typeof entry.prompt === 'string' &&
+        typeof entry.createdAt === 'number' &&
+        entry.spec &&
+        typeof entry.spec === 'object' &&
+        Array.isArray((entry.spec as any).parts)
+      );
+    });
   } catch {
     return [];
   }

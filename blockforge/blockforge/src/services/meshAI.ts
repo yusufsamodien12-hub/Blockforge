@@ -156,7 +156,10 @@ function extractJson(text: string): unknown {
     return Number.isFinite(value) ? String(value * Math.PI) : String(Math.PI);
   });
   cleaned = cleaned.replace(/Math\.PI/g, String(Math.PI));
-  cleaned = cleaned.replace(/([{,]\s*)([A-Za-z0-9_]+)\s*:/g, '$1"$2":');
+  cleaned = cleaned.replace(/"([^"\\]|\\.)*"|([{,]\s*)([A-Za-z0-9_]+)\s*:/g, (match, stringPart, prefix, key) => {
+    if (typeof stringPart === 'string' && stringPart !== undefined) return match;
+    return `${prefix}\"${key}\":`;
+  });
   cleaned = cleaned.replace(/,\s*([}\]])/g, '$1');
 
   const start = cleaned.indexOf('{');
@@ -173,19 +176,15 @@ function extractJson(text: string): unknown {
 // world26 already uses -- no new backend required.
 export async function generateMesh(objectDescription: string): Promise<GenerateMeshResult> {
   const envProxyUrl = (import.meta as any)?.env?.VITE_PROXY_URL as string | undefined;
+  const proxyFormat = (import.meta as any)?.env?.VITE_PROXY_FORMAT as string | undefined;
   const directKey = (import.meta as any)?.env?.VITE_MISTRAL_API_KEY as string | undefined;
-  // Only assume "there's a local server.js on this origin" when nothing
-  // else is configured. This used to default to '/api/mistral/chat'
-  // unconditionally, which made the directKey branch below unreachable --
-  // VITE_MISTRAL_API_KEY-only setups (still documented in .env.example)
-  // silently 404'd against a route that doesn't exist on a static deploy.
   const proxyUrl = envProxyUrl ?? (directKey ? undefined : '/api/mistral/chat');
 
   const prompt = `Design a precise 3D mesh for: "${objectDescription.trim()}"`;
   let responseText: string;
 
   if (proxyUrl) {
-    const usesSimplifiedFormat = proxyUrl.includes('/api/mistral/chat');
+    const usesSimplifiedFormat = proxyFormat === 'simple' || proxyUrl.includes('/api/mistral/chat');
     const body = usesSimplifiedFormat
       ? { systemInstruction: SYSTEM_PROMPT, prompt, model: 'mistral-large-latest' }
       : {

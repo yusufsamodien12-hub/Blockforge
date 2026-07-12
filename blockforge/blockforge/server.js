@@ -6,7 +6,10 @@ import { Mistral } from '@mistralai/mistralai';
 
 function loadEnvFile() {
   const envPath = path.resolve(process.cwd(), '.env');
-  if (!fs.existsSync(envPath)) return;
+  if (!fs.existsSync(envPath)) {
+    console.warn('⚠️ .env file not found. Environment variables will only come from the runtime environment.');
+    return;
+  }
 
   const raw = fs.readFileSync(envPath, 'utf8');
   raw.split(/\r?\n/).forEach((line) => {
@@ -372,7 +375,12 @@ app.get('/health', (req, res) => {
   res.json({ status: 'ok', service: 'blockforge-proxy' });
 });
 
-app.use(express.static(path.resolve(process.cwd())));
+const publicRoot = path.resolve(process.cwd(), 'dist');
+if (fs.existsSync(publicRoot)) {
+  app.use(express.static(publicRoot));
+} else {
+  app.use(express.static(path.resolve(process.cwd(), 'public')));
+}
 
 app.listen(PORT, () => {
   console.log(`🚀 BlockForge local proxy running on http://localhost:${PORT}`);
