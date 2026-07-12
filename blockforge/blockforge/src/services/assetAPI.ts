@@ -6,15 +6,22 @@ function normalizePolyHavenAsset(id: string, asset: any): AssetSearchResult {
     id,
     name: asset.name || id,
     description: asset.description,
-    thumbnailUrl: asset.thumbnail_url,
+    thumbnailUrl: asset.thumbnail_url || asset.thumbnailUrl || asset.thumbnail || undefined,
     tags: Array.isArray(asset.tags) ? asset.tags : [],
     categories: Array.isArray(asset.categories) ? asset.categories : [],
     maxResolution: Array.isArray(asset.max_resolution) ? asset.max_resolution : undefined,
     downloadCount: typeof asset.download_count === 'number' ? asset.download_count : undefined,
-    files: [],
+    files: buildPolyHavenAssetFiles(id, asset),
     raw: asset,
   };
 }
+
+function buildPolyHavenAssetFiles(id: string, asset: any): { url: string; type?: string; size?: number }[] {
+  const files: { url: string; type?: string; size?: number }[] = [];
+  files.push({ url: `https://polyhaven.com/a/${encodeURIComponent(id)}`, type: 'page' });
+  return files;
+}
+
 
 function filterPolyHavenResults(results: AssetSearchResult[], query: string): AssetSearchResult[] {
   const normalized = query.trim().toLowerCase();
@@ -37,6 +44,7 @@ async function fetchPolyHavenDirect(query: string): Promise<AssetSearchResponse>
 
   const directUrl = new URL(baseUrl);
   if (trimmedQuery) {
+    directUrl.searchParams.set('q', trimmedQuery);
     directUrl.searchParams.set('c', trimmedQuery);
   }
 

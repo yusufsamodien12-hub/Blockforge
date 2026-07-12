@@ -5,6 +5,7 @@ import { CustomMeshSpec } from '../types';
 interface MeshViewerProps {
   spec: CustomMeshSpec | null;
   isLoading: boolean;
+  textureUrl?: string | null;
 }
 
 function buildGeometry(part: CustomMeshSpec['parts'][number]): THREE.BufferGeometry {
@@ -24,10 +25,12 @@ function buildGeometry(part: CustomMeshSpec['parts'][number]): THREE.BufferGeome
   }
 }
 
-export default function MeshViewer({ spec, isLoading }: MeshViewerProps) {
+export default function MeshViewer({ spec, isLoading, textureUrl }: MeshViewerProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const sceneRef = useRef<THREE.Scene | null>(null);
+  const rendererRef = useRef<THREE.WebGLRenderer | null>(null);
   const objectGroupRef = useRef<THREE.Group | null>(null);
+  const textureRef = useRef<THREE.Texture | null>(null);
   const cameraStateRef = useRef({ angle: 0.6, elevation: 0.45, dist: 6 });
   const draggingRef = useRef(false);
 
@@ -47,6 +50,7 @@ export default function MeshViewer({ spec, isLoading }: MeshViewerProps) {
     renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
     renderer.shadowMap.enabled = true;
     container.appendChild(renderer.domElement);
+    rendererRef.current = renderer;
 
     scene.add(new THREE.AmbientLight(0x334155, 0.7));
     const key = new THREE.DirectionalLight(0xffffff, 1.1);
@@ -98,13 +102,13 @@ export default function MeshViewer({ spec, isLoading }: MeshViewerProps) {
     window.addEventListener('pointermove', onMove);
     renderer.domElement.addEventListener('wheel', onWheel);
 
-    const onResize = () => {
+    const resizeObserver = new ResizeObserver(() => {
       if (!container) return;
       camera.aspect = container.clientWidth / container.clientHeight;
       camera.updateProjectionMatrix();
       renderer.setSize(container.clientWidth, container.clientHeight);
-    };
-    window.addEventListener('resize', onResize);
+    });
+    resizeObserver.observe(container);
 
     let frameId: number;
     const animate = () => {
@@ -124,62 +128,116 @@ export default function MeshViewer({ spec, isLoading }: MeshViewerProps) {
 
     return () => {
       cancelAnimationFrame(frameId);
-      window.removeEventListener('resize', onResize);
+      resizeObserver.disconnect();
       window.removeEventListener('pointerup', onUp);
       window.removeEventListener('pointermove', onMove);
       renderer.domElement.removeEventListener('pointerdown', onDown);
       renderer.domElement.removeEventListener('wheel', onWheel);
       renderer.dispose();
       if (container.contains(renderer.domElement)) container.removeChild(renderer.domElement);
+      if (textureRef.current) {
+        textureRef.current.dispose();
+        textureRef.current = null;
+      }
     };
   }, []);
 
-  // Rebuild the object whenever the spec changes.
+  // Rebuild the object whenever the spec or texture changes.
   useEffect(() => {
     const group = objectGroupRef.current;
     if (!group) return;
 
-    while (group.children.length > 0) {
-      const child = group.children.pop() as THREE.Mesh;
-      child.geometry.dispose();
-      (child.material as THREE.Material).dispose();
-    }
+    let active = true;
+    const cleanupPrevious = () => {
+      while (group.children.length > 0) {
+        const child = group.children.pop() as THREE.Mesh;
+        child.geometry.dispose();
+        (child.material as THREE.Material).dispose();
+      }
+    };
+
+    cleanupPrevious();
 
     if (!spec) return;
 
-    let maxHeight = 0;
-    for (const part of spec.parts) {
-      const geometry = buildGeometry(part);
-      const material = new THREE.MeshStandardMaterial({
-        color: part.material.color,
-        roughness: part.material.roughness,
-        metalness: part.material.metalness,
-        emissive: part.material.emissive ?? '#000000',
-        emissiveIntensity: part.material.emissiveIntensity ?? 0,
+    const loadTexture = (url: string): Promise<THREE.Texture> => {
+      return new Promise((resolve, reject) => {
+        const loader = new THREE.TextureLoader();
+        loader.load(
+          url,
+          (texture) => resolve(texture),
+          undefined,
+          (err) => reject(err)
+        );
       });
-      const mesh = new THREE.Mesh(geometry, material);
-      mesh.position.set(...part.position);
-      mesh.rotation.set(...part.rotation);
-      mesh.castShadow = true;
-      mesh.receiveShadow = true;
-      mesh.scale.set(0.01, 0.01, 0.01);
-      group.add(mesh);
-      maxHeight = Math.max(maxHeight, part.position[1] + 1);
-    }
-
-    cameraStateRef.current.dist = Math.max(3, Math.min(12, maxHeight * 2.5));
-
-    let s = 0.01;
-    const grow = () => {
-      s = Math.min(1, s + 0.09);
-      group.children.forEach((child) => {
-        const mesh = child as THREE.Mesh;
-        mesh.scale.set(s, s, s);
-      });
-      if (s < 1) requestAnimationFrame(grow);
     };
-    grow();
-  }, [spec]);
+
+    const buildMeshes = async () => {
+      if (textureRef.current) {
+        textureRef.current.dispose();
+        textureRef.current = null;
+      }
+
+      if (textureUrl) {
+        try {
+          const texture = await loadTexture(textureUrl);
+          if (!active) return;
+          texture.wrapS = THREE.RepeatWrapping;
+          texture.wrapT = THREE.RepeatWrapping;
+          texture.repeat.set(1, 1);
+          texture.anisotropy = 16;
+          textureRef.current = texture;
+        } catch {
+          textureRef.current = null;
+        }
+      }
+
+      let maxHeight = 0;
+      for (const part of spec.parts) {
+        const geometry = buildGeometry(part);
+        const material = new THREE.MeshStandardMaterial({
+          color: part.material.color,
+          roughness: part.material.roughness,
+          metalness: part.material.metalness,
+          emissive: part.material.emissive ?? '#000000',
+          emissiveIntensity: part.material.emissiveIntensity ?? 0,
+          map: textureRef.current ?? null,
+        });
+        const mesh = new THREE.Mesh(geometry, material);
+        mesh.position.set(...part.position);
+        mesh.rotation.set(...part.rotation);
+        mesh.castShadow = true;
+        mesh.receiveShadow = true;
+        mesh.scale.set(0.01, 0.01, 0.01);
+        group.add(mesh);
+        maxHeight = Math.max(maxHeight, part.position[1] + 1);
+      }
+
+      cameraStateRef.current.dist = Math.max(3, Math.min(12, maxHeight * 2.5));
+
+      let s = 0.01;
+      const grow = () => {
+        s = Math.min(1, s + 0.09);
+        group.children.forEach((child) => {
+          const mesh = child as THREE.Mesh;
+          mesh.scale.set(s, s, s);
+        });
+        if (s < 1) requestAnimationFrame(grow);
+      };
+      grow();
+    };
+
+    buildMeshes();
+
+    return () => {
+      active = false;
+      cleanupPrevious();
+      if (textureRef.current) {
+        textureRef.current.dispose();
+        textureRef.current = null;
+      }
+    };
+  }, [spec, textureUrl]);
 
   return (
     <div ref={containerRef} className="mesh-viewer">

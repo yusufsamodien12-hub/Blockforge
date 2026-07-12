@@ -40,7 +40,7 @@ if (!mistralApiKey && !proxyUrl) {
 
 const client = mistralApiKey ? new Mistral({ apiKey: mistralApiKey }) : null;
 const API_USER_AGENT = process.env.API_USER_AGENT ?? 'BlockForge/1.0 (+https://github.com/yusufsamodien12-hub/Blockforge)';
-const ambientCGApiUrl = process.env.AMBIENTCG_API_URL ?? 'https://ambientcg.com/api/v1';
+const ambientCGApiUrl = process.env.AMBIENTCG_API_URL ?? 'https://ambientcg.com/api/v3/assets';
 
 app.use(cors());
 app.use(express.json({ limit: '10mb' }));
@@ -49,41 +49,57 @@ function normalizePolyHavenAsset(id, asset) {
   return {
     source: 'polyhaven',
     id,
-    name: asset.name || id,
+    name: asset.name || asset.title || id,
     description: asset.description ?? undefined,
-    thumbnailUrl: asset.thumbnail_url,
+    thumbnailUrl: asset.thumbnail_url || asset.thumbnailUrl || asset.thumbnail || undefined,
     tags: Array.isArray(asset.tags) ? asset.tags : [],
     categories: Array.isArray(asset.categories) ? asset.categories : [],
     maxResolution: Array.isArray(asset.max_resolution) && asset.max_resolution.length === 2 ? asset.max_resolution : undefined,
     downloadCount: typeof asset.download_count === 'number' ? asset.download_count : undefined,
-    files: [],
+    files: buildPolyHavenAssetFiles(id, asset),
     raw: asset,
   };
+}
+
+function buildPolyHavenAssetFiles(id, asset) {
+  const safeId = id.toLowerCase().replace(/\s+/g, '_').replace(/[^a-z0-9_]/g, '');
+  const assetId = safeId || id;
+  return [{ url: `https://polyhaven.com/a/${assetId}`, type: 'page' }];
 }
 
 function normalizeAmbientCGAsset(id, asset) {
   const files = [];
   if (typeof asset.downloadLink === 'string') {
-    files.push({ url: asset.downloadLink });
+    files.push({ url: asset.downloadLink, type: 'download' });
   }
   if (Array.isArray(asset.downloadLinks)) {
     asset.downloadLinks.forEach((link) => {
-      if (typeof link === 'string') files.push({ url: link });
-      else if (link && typeof link.url === 'string') files.push({ url: link.url, md5: link.md5, size: link.size });
+      if (typeof link === 'string') files.push({ url: link, type: 'download' });
+      else if (link && typeof link.url === 'string') files.push({ url: link.url, md5: link.md5, size: link.size, type: 'download' });
     });
   }
   if (Array.isArray(asset.files)) {
     asset.files.forEach((file) => {
-      if (file && typeof file.url === 'string') files.push({ url: file.url, md5: file.md5, size: file.size, type: file.type });
+      if (file && typeof file.url === 'string') files.push({ url: file.url, md5: file.md5, size: file.size, type: file.type || 'download' });
     });
   }
+
+  if (!files.length && (asset.id || id)) {
+    files.push({ url: `https://ambientcg.com/view?id=${asset.id || id}`, type: 'page' });
+  }
+
+  const thumbnailUrl =
+    typeof asset.thumbnailUrl === 'string' ? asset.thumbnailUrl :
+    typeof asset.preview === 'string' ? asset.preview :
+    typeof asset.thumbnail === 'string' ? asset.thumbnail :
+    asset.thumbnails?.['1024-PNG'] || asset.thumbnails?.['512-PNG'] || asset.thumbnails?.['256-PNG'] || asset.thumbnails?.['128-PNG'] || undefined;
 
   return {
     source: 'ambientcg',
     id: asset.id || id || asset.name || JSON.stringify(asset),
-    name: asset.name || asset.title || id || 'ambientCG asset',
+    name: asset.name || asset.title || asset.id || id || 'ambientCG asset',
     description: asset.description ?? undefined,
-    thumbnailUrl: asset.thumbnailUrl || asset.preview || asset.thumbnail || undefined,
+    thumbnailUrl,
     tags: Array.isArray(asset.tags) ? asset.tags : Array.isArray(asset.categories) ? asset.categories : [],
     categories: Array.isArray(asset.categories) ? asset.categories : undefined,
     maxResolution: Array.isArray(asset.max_resolution) && asset.max_resolution.length === 2 ? asset.max_resolution : undefined,
@@ -99,8 +115,9 @@ async function searchPolyHavenAssets(query) {
   url.searchParams.set('t', 'textures');
   url.searchParams.set('ext', 'apiassets');
   if (query) {
-    url.searchParams.set('categories', query);
+    url.searchParams.set('q', query);
     url.searchParams.set('c', query);
+    url.searchParams.set('search', query);
   }
 
   const response = await fetch(url.toString(), {
@@ -141,6 +158,7 @@ async function searchAmbientCGAssets(query) {
     url.searchParams.set('search', query);
   }
   url.searchParams.set('limit', '12');
+  url.searchParams.set('include', 'thumbnails');
 
   const response = await fetch(url.toString(), {
     headers: {

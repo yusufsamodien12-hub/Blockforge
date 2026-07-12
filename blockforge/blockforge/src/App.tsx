@@ -42,12 +42,13 @@ export default function App() {
   const [activeId, setActiveId] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [assetQuery, setAssetQuery] = useState('plastic');
   const [assetResults, setAssetResults] = useState<AssetSearchResult[]>([]);
   const [assetLoading, setAssetLoading] = useState(false);
   const [assetError, setAssetError] = useState<string | null>(null);
   const [assetSearchTriggered, setAssetSearchTriggered] = useState(false);
   const [showAssetStatus, setShowAssetStatus] = useState(true);
+  const [textureUrl, setTextureUrl] = useState<string | null>(null);
+  const [viewerMaximized, setViewerMaximized] = useState(false);
   const [gallery, setGallery] = useState<GalleryEntry[]>([]);
 
   const polyHavenCount = assetResults.filter((result) => result.source === 'polyhaven').length;
@@ -59,6 +60,33 @@ export default function App() {
   useEffect(() => {
     setGallery(loadGallery());
   }, []);
+
+  function getTextureUrlFromAsset(asset: AssetSearchResult): string | null {
+    const downloadFile = asset.files?.find(
+      (f) => typeof f.url === 'string' && f.type !== 'page' && /\.(jpe?g|png|webp|avif|gif)$/i.test(f.url)
+    );
+    if (downloadFile?.url) return downloadFile.url;
+    if (asset.thumbnailUrl && /\.(jpe?g|png|webp|avif|gif)$/i.test(asset.thumbnailUrl)) {
+      return asset.thumbnailUrl;
+    }
+    return null;
+  }
+
+  useEffect(() => {
+    const assetWithTexture = assetResults
+      .map((asset) => ({ asset, url: getTextureUrlFromAsset(asset) }))
+      .find((item) => item.url);
+
+    setTextureUrl(assetWithTexture?.url ?? null);
+  }, [assetResults]);
+
+  function buildTextureSearchQuery(description: string) {
+    const parts = [description];
+    if (material !== 'any') parts.push(material);
+    if (color !== 'any') parts.push(color);
+    if (extraFeature.trim()) parts.push(extraFeature.trim());
+    return parts.join(' ');
+  }
 
   async function handleGenerate(overridePrompt?: string) {
     const description = (overridePrompt ?? prompt).trim();
@@ -85,9 +113,11 @@ export default function App() {
       ? `${description} with ${filterPrompts.join(', ')}`
       : description;
 
+    const textureQuery = buildTextureSearchQuery(description);
     setIsLoading(true);
     setError(null);
     try {
+      await handleAssetSearch(textureQuery).catch(() => {});
       const { spec: newSpec } = await generateMesh(descriptionWithFilters);
       const entry: GalleryEntry = {
         id: crypto.randomUUID?.() ?? `${Date.now()}-${Math.random().toString(36).slice(2)}`,
@@ -107,8 +137,6 @@ export default function App() {
     } finally {
       setIsLoading(false);
     }
-
-    handleAssetSearch();
   }
 
   function handleSelect(entry: GalleryEntry) {
@@ -118,19 +146,16 @@ export default function App() {
     setError(null);
   }
 
-  async function handleAssetSearch(query?: string) {
+  async function handleAssetSearch(searchTerm: string) {
     if (assetLoading) return;
-    const searchQuery = typeof query === 'string' ? query.trim() : assetQuery.trim();
-    if (!searchQuery) return;
+    const query = searchTerm.trim();
+    if (!query) return;
 
     setAssetLoading(true);
     setAssetError(null);
-    if (typeof query === 'string') {
-      setAssetQuery(searchQuery);
-    }
 
     try {
-      const data = await searchAssets(searchQuery);
+      const data = await searchAssets(query);
       setAssetResults(data.results);
       setAssetSearchTriggered(true);
       if (data.errors && Object.keys(data.errors).length > 0) {
@@ -172,159 +197,160 @@ export default function App() {
       </aside>
 
       <main className="main">
-        <div className="prompt-bar">
-          <input
-            className="prompt-input"
-            placeholder="What should BlockForge design? e.g. 'clay roof tile'"
-            value={prompt}
-            onChange={(e) => setPrompt(e.target.value)}
-            onKeyDown={(e) => { if (e.key === 'Enter') handleGenerate(); }}
-          />
-          <button className="prompt-button" onClick={() => handleGenerate()} disabled={isLoading || !prompt.trim()}>
-            {isLoading ? 'Designing…' : 'Design it'}
-          </button>
-        </div>
-
-        <div className="asset-search-bar">
-          <input
-            className="prompt-input"
-            placeholder="Search PolyHaven + ambientCG textures"
-            value={assetQuery}
-            onChange={(e) => setAssetQuery(e.target.value)}
-            onKeyDown={(e) => { if (e.key === 'Enter') handleAssetSearch(); }}
-          />
-          <button className="prompt-button" onClick={() => handleAssetSearch()} disabled={assetLoading}>
-            {assetLoading ? 'Searching…' : 'Search assets'}
-          </button>
-        </div>
-
-        <div className="filter-bar">
-          <select className="filter-select" value={size} onChange={(e) => setSize(e.target.value as typeof size)}>
-            {SIZE_OPTIONS.map((option) => (
-              <option key={option} value={option}>{option === 'any' ? 'Any size' : `${option.charAt(0).toUpperCase() + option.slice(1)} size`}</option>
-            ))}
-          </select>
-          <select className="filter-select" value={color} onChange={(e) => setColor(e.target.value as typeof color)}>
-            {COLOR_OPTIONS.map((option) => (
-              <option key={option} value={option}>{option === 'any' ? 'Any color' : `${option.charAt(0).toUpperCase() + option.slice(1)} color`}</option>
-            ))}
-          </select>
-          <select className="filter-select" value={material} onChange={(e) => setMaterial(e.target.value as typeof material)}>
-            {MATERIAL_OPTIONS.map((option) => (
-              <option key={option} value={option}>{option === 'any' ? 'Any material' : `${option.charAt(0).toUpperCase() + option.slice(1)}`}</option>
-            ))}
-          </select>
-          <select className="filter-select" value={tool} onChange={(e) => setTool(e.target.value as typeof tool)}>
-            {TOOL_OPTIONS.map((option) => (
-              <option key={option} value={option}>
-                {option === 'auto'
-                  ? 'Tool: Auto (AI decides)'
-                  : option === 'any'
-                    ? 'Any tool'
-                    : `Tool: ${option.replace(/-/g, ' ')}`}
-              </option>
-            ))}
-          </select>
-          <select className="filter-select" value={skill} onChange={(e) => setSkill(e.target.value as typeof skill)}>
-            {SKILL_OPTIONS.map((option) => (
-              <option key={option} value={option}>
-                {option === 'auto'
-                  ? 'Skill: Auto (AI decides)'
-                  : option === 'any'
-                    ? 'Any skill'
-                    : `Skill: ${option.replace(/-/g, ' ')}`}
-              </option>
-            ))}
-          </select>
-          <input
-            className="filter-input"
-            placeholder="Extra feature (textured, hollow, beveled, embossed)"
-            value={extraFeature}
-            onChange={(e) => setExtraFeature(e.target.value)}
-          />
-        </div>
-
-        <div className="quick-picks">
-          {QUICK_PICKS.map((label) => (
-            <button
-              key={label}
-              className="quick-pick-chip"
-              onClick={() => { setPrompt(label); handleGenerate(label); }}
-              disabled={isLoading}
-            >
-              {label}
-            </button>
-          ))}
-        </div>
-
-        {error && <div className="error-banner">{error}</div>}
-        {assetError && <div className="error-banner">{assetError}</div>}
-        {showAssetStatus ? (
-          <div className="asset-status-bar">
-            <div className={`asset-status-chip ${polyHavenUsed ? 'asset-status-chip--active' : ''}`}>
-              {polyHavenUsed
-                ? `PolyHaven textures loaded: ${polyHavenCount}`
-                : assetSearchTriggered
-                  ? 'PolyHaven textures loaded: 0'
-                  : 'PolyHaven textures pending'}
-            </div>
-            <div className={`asset-status-chip ${ambientCGUsed ? 'asset-status-chip--active' : ''}`}>
-              {ambientCGUsed
-                ? `ambientCG textures loaded: ${ambientCGCount}`
-                : assetSearchTriggered
-                  ? 'ambientCG textures loaded: 0'
-                  : 'ambientCG textures pending'}
-            </div>
-            <button type="button" className="asset-status-toggle" onClick={() => setShowAssetStatus(false)}>
-              Hide status
+        <div className="main-header">
+          <div className="prompt-bar">
+            <input
+              className="prompt-input"
+              placeholder="What should BlockForge design? e.g. 'clay roof tile'"
+              value={prompt}
+              onChange={(e) => setPrompt(e.target.value)}
+              onKeyDown={(e) => { if (e.key === 'Enter') handleGenerate(); }}
+            />
+            <button className="prompt-button" onClick={() => handleGenerate()} disabled={isLoading || !prompt.trim()}>
+              {isLoading ? 'Designing…' : 'Design it'}
             </button>
           </div>
-        ) : (
-          <div className="asset-status-hidden">
-            <button type="button" className="asset-status-toggle" onClick={() => setShowAssetStatus(true)}>
-              Show texture status
-            </button>
-          </div>
-        )}
 
-        <MeshViewer spec={spec} isLoading={isLoading} />
 
-        {spec && (
-          <div className="research-panel">
-            <div className="research-title">{spec.objectName}</div>
-            <div className="research-note">{spec.materialResearch}</div>
-            <div className="research-meta">{spec.parts.length} part{spec.parts.length === 1 ? '' : 's'}</div>
-          </div>
-        )}
-
-        {assetResults.length > 0 && (
-          <div className="asset-results-panel">
-            <div className="research-title">Textures used from PolyHaven / ambientCG</div>
-            <div className="asset-results-grid">
-              {assetResults.map((asset) => (
-                <div key={`${asset.source}-${asset.id}`} className="asset-result-card">
-                  <div className="asset-source">{asset.source === 'polyhaven' ? 'PolyHaven' : 'ambientCG'}</div>
-                  {asset.thumbnailUrl ? (
-                    <img className="asset-thumbnail" src={asset.thumbnailUrl} alt={asset.name} />
-                  ) : (
-                    <div className="asset-thumbnail asset-thumbnail--empty">No preview</div>
-                  )}
-                  <div className="asset-name">{asset.name}</div>
-                  <div className="asset-meta">
-                    {asset.tags?.slice(0, 3).join(', ') || asset.categories?.slice(0, 3).join(', ') || 'No tags'}
-                  </div>
-                  {asset.files?.[0]?.url ? (
-                    <a className="asset-download" href={asset.files[0].url} target="_blank" rel="noreferrer">
-                      Download file
-                    </a>
-                  ) : (
-                    <div className="asset-download asset-download--disabled">No file link</div>
-                  )}
-                </div>
+          <div className="filter-bar">
+            <select className="filter-select" value={size} onChange={(e) => setSize(e.target.value as typeof size)}>
+              {SIZE_OPTIONS.map((option) => (
+                <option key={option} value={option}>{option === 'any' ? 'Any size' : `${option.charAt(0).toUpperCase() + option.slice(1)} size`}</option>
               ))}
-            </div>
+            </select>
+            <select className="filter-select" value={color} onChange={(e) => setColor(e.target.value as typeof color)}>
+              {COLOR_OPTIONS.map((option) => (
+                <option key={option} value={option}>{option === 'any' ? 'Any color' : `${option.charAt(0).toUpperCase() + option.slice(1)} color`}</option>
+              ))}
+            </select>
+            <select className="filter-select" value={material} onChange={(e) => setMaterial(e.target.value as typeof material)}>
+              {MATERIAL_OPTIONS.map((option) => (
+                <option key={option} value={option}>{option === 'any' ? 'Any material' : `${option.charAt(0).toUpperCase() + option.slice(1)}`}</option>
+              ))}
+            </select>
+            <select className="filter-select" value={tool} onChange={(e) => setTool(e.target.value as typeof tool)}>
+              {TOOL_OPTIONS.map((option) => (
+                <option key={option} value={option}>
+                  {option === 'auto'
+                    ? 'Tool: Auto (AI decides)'
+                    : option === 'any'
+                      ? 'Any tool'
+                      : `Tool: ${option.replace(/-/g, ' ')}`}
+                </option>
+              ))}
+            </select>
+            <select className="filter-select" value={skill} onChange={(e) => setSkill(e.target.value as typeof skill)}>
+              {SKILL_OPTIONS.map((option) => (
+                <option key={option} value={option}>
+                  {option === 'auto'
+                    ? 'Skill: Auto (AI decides)'
+                    : option === 'any'
+                      ? 'Any skill'
+                      : `Skill: ${option.replace(/-/g, ' ')}`}
+                </option>
+              ))}
+            </select>
+            <input
+              className="filter-input"
+              placeholder="Extra feature (textured, hollow, beveled, embossed)"
+              value={extraFeature}
+              onChange={(e) => setExtraFeature(e.target.value)}
+            />
           </div>
-        )}
+
+          <div className="quick-picks">
+            {QUICK_PICKS.map((label) => (
+              <button
+                key={label}
+                className="quick-pick-chip"
+                onClick={() => { setPrompt(label); handleGenerate(label); }}
+                disabled={isLoading}
+              >
+                {label}
+              </button>
+            ))}
+          </div>
+
+          {error && <div className="error-banner">{error}</div>}
+          {assetError && <div className="error-banner">{assetError}</div>}
+          {showAssetStatus ? (
+            <div className="asset-status-bar">
+              <div className={`asset-status-chip ${polyHavenUsed ? 'asset-status-chip--active' : ''}`}>
+                {polyHavenUsed
+                  ? `PolyHaven textures loaded: ${polyHavenCount}`
+                  : assetSearchTriggered
+                    ? 'PolyHaven textures loaded: 0'
+                    : 'PolyHaven textures pending'}
+              </div>
+              <div className={`asset-status-chip ${ambientCGUsed ? 'asset-status-chip--active' : ''}`}>
+                {ambientCGUsed
+                  ? `ambientCG textures loaded: ${ambientCGCount}`
+                  : assetSearchTriggered
+                    ? 'ambientCG textures loaded: 0'
+                    : 'ambientCG textures pending'}
+              </div>
+              <button type="button" className="asset-status-toggle" onClick={() => setShowAssetStatus(false)}>
+                Hide status
+              </button>
+            </div>
+          ) : (
+            <div className="asset-status-hidden">
+              <button type="button" className="asset-status-toggle" onClick={() => setShowAssetStatus(true)}>
+                Show texture status
+              </button>
+            </div>
+          )}
+        </div>
+
+        <div className="main-content">
+          <div className={`mesh-viewer-wrapper ${viewerMaximized ? 'mesh-viewer-wrapper--maximized' : ''}`}>
+            <button
+              type="button"
+              className="viewer-toggle-button"
+              onClick={() => setViewerMaximized((prev) => !prev)}
+            >
+              {viewerMaximized ? 'Restore view' : 'Maximize view'}
+            </button>
+            <MeshViewer spec={spec} isLoading={isLoading} textureUrl={textureUrl} />
+          </div>
+
+          {spec && (
+            <div className="research-panel">
+              <div className="research-title">{spec.objectName}</div>
+              <div className="research-note">{spec.materialResearch}</div>
+              <div className="research-meta">{spec.parts.length} part{spec.parts.length === 1 ? '' : 's'}</div>
+            </div>
+          )}
+
+          {assetResults.length > 0 && (
+            <div className="asset-results-panel">
+              <div className="research-title">Textures used from PolyHaven / ambientCG</div>
+              <div className="asset-results-grid">
+                {assetResults.map((asset) => (
+                  <div key={`${asset.source}-${asset.id}`} className="asset-result-card">
+                    <div className="asset-source">{asset.source === 'polyhaven' ? 'PolyHaven' : 'ambientCG'}</div>
+                    {asset.thumbnailUrl ? (
+                      <img className="asset-thumbnail" src={asset.thumbnailUrl} alt={asset.name} />
+                    ) : (
+                      <div className="asset-thumbnail asset-thumbnail--empty">No preview</div>
+                    )}
+                    <div className="asset-name">{asset.name}</div>
+                    <div className="asset-meta">
+                      {asset.tags?.slice(0, 3).join(', ') || asset.categories?.slice(0, 3).join(', ') || 'No tags'}
+                    </div>
+                    {asset.files?.[0]?.url ? (
+                      <a className="asset-download" href={asset.files[0].url} target="_blank" rel="noreferrer">
+                        {asset.files[0].type === 'page' ? 'Open asset' : 'Download file'}
+                      </a>
+                    ) : (
+                      <div className="asset-download asset-download--disabled">No file link</div>
+                    )}
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+        </div>
       </main>
     </div>
   );
