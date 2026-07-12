@@ -95,7 +95,7 @@ export default function App() {
         const latest = data?.activity?.[0];
         if (!latest || latest.source === 'unknown') return;
         const ageMs = Date.now() - new Date(latest.created_at.replace(' ', 'T') + 'Z').getTime();
-        setAgentActivity(ageMs < 15000 ? latest : null);
+        setAgentActivity(ageMs < 30000 ? latest : null);
       } catch {
         // Non-fatal -- just skip this poll cycle.
       }
