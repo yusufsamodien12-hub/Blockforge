@@ -10,7 +10,9 @@ export default defineConfig(({ mode }) => {
     // at username.github.io/blockforge/), set this to '/blockforge/' for
     // production builds. Leaving it as '/' will 404 all built assets on a
     // subpath host -- this bit us on the sibling world26 project.
-    base: isProd ? '/blockforge/' : '/',
+    // Vercel (and other root-domain hosts) always serve from '/', so skip
+    // the subpath base whenever the build is running on Vercel.
+    base: isProd && !process.env.VERCEL ? '/blockforge/' : '/',
     envPrefix: 'VITE_',
     server: {
       strictPort: true,
