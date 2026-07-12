@@ -28,6 +28,7 @@ app.get('/', (c) => {
       health: 'GET /',
       chat: 'POST /v1/chat/completions',
       design: 'POST /design',
+      agentActivity: 'GET /agent-activity',
       state: {
         get: 'GET /state',
         post: 'POST /state',
@@ -74,6 +75,30 @@ app.post('/clear-state', async (c) => {
     return c.json({ error: `Memory Clear Error: ${err.message}` }, 500);
   }
 });
+
+// GET /agent-activity — recent BlockForge tool-usage events, so the BlockForge
+// UI can show a live "agent is using this tool" indicator.
+app.get('/agent-activity', async (c) => {
+  try {
+    const { results } = await c.env.DB.prepare(
+      'SELECT id, source, description, created_at FROM agent_activity ORDER BY id DESC LIMIT 10'
+    ).all();
+    return c.json({ activity: results ?? [] });
+  } catch (err: any) {
+    console.error('Agent Activity Fetch Error:', err);
+    return c.json({ error: `Agent Activity Fetch Error: ${err.message}` }, 500);
+  }
+});
+
+async function logAgentActivity(db: D1Database, source: string, description: string): Promise<void> {
+  try {
+    await db.prepare('INSERT INTO agent_activity (source, description) VALUES (?, ?)')
+      .bind(source, description)
+      .run();
+  } catch (err) {
+    console.error('Agent Activity Log Error:', err);
+  }
+}
 
 // POST /v1/chat/completions - Generic Mistral proxy (unchanged behavior).
 app.post('/v1/chat/completions', async (c) => {
@@ -275,10 +300,13 @@ app.post('/design', async (c) => {
     const body = await c.req.json();
     const description: string = typeof body.description === 'string' ? body.description.trim() : '';
     const material: string = typeof body.material === 'string' ? body.material.trim() : '';
+    const source: string = typeof body.source === 'string' && body.source.trim() ? body.source.trim().slice(0, 40) : 'unknown';
 
     if (!description) {
       return c.json({ error: 'Missing required field: description' }, 400);
     }
+
+    c.executionCtx.waitUntil(logAgentActivity(c.env.DB, source, description));
 
     const prompt = `Design a precise 3D mesh for: "${description}"${material ? ` (material hint: ${material})` : ''}`;
 

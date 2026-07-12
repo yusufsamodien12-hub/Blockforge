@@ -66,6 +66,7 @@ export default function App() {
   const [textureMapsLoading, setTextureMapsLoading] = useState(false);
   const [viewerMaximized, setViewerMaximized] = useState(false);
   const [gallery, setGallery] = useState<GalleryEntry[]>([]);
+  const [agentActivity, setAgentActivity] = useState<{ source: string; description: string; created_at: string } | null>(null);
 
   const polyHavenCount = assetResults.filter((result) => result.source === 'polyhaven').length;
   const ambientCGCount = assetResults.filter((result) => result.source === 'ambientcg').length;
@@ -75,6 +76,34 @@ export default function App() {
 
   useEffect(() => {
     setGallery(loadGallery());
+  }, []);
+
+  // Poll BlockForge's own worker for recent /design calls from other tools
+  // (e.g. World-Agent), so this UI can show a live "agent is using this
+  // tool" indicator. Only surfaces activity from the last 15 seconds.
+  useEffect(() => {
+    const proxyUrl = (import.meta as any)?.env?.VITE_PROXY_URL as string | undefined;
+    if (!proxyUrl) return;
+    const activityUrl = proxyUrl.replace(/\/v1\/chat\/completions$/, '/agent-activity');
+
+    let cancelled = false;
+    async function poll() {
+      try {
+        const resp = await fetch(activityUrl);
+        if (!resp.ok || cancelled) return;
+        const data: any = await resp.json();
+        const latest = data?.activity?.[0];
+        if (!latest || latest.source === 'unknown') return;
+        const ageMs = Date.now() - new Date(latest.created_at.replace(' ', 'T') + 'Z').getTime();
+        setAgentActivity(ageMs < 15000 ? latest : null);
+      } catch {
+        // Non-fatal -- just skip this poll cycle.
+      }
+    }
+
+    poll();
+    const interval = setInterval(poll, 4000);
+    return () => { cancelled = true; clearInterval(interval); };
   }, []);
 
   useEffect(() => {
@@ -232,6 +261,11 @@ export default function App() {
           </div>
         </div>
         <div className="sidebar-section-label">Gallery</div>
+        {agentActivity && (
+          <div className="agent-activity-banner">
+            🤖 <strong>{agentActivity.source}</strong> is using this tool: “{agentActivity.description}”
+          </div>
+        )}
         <Gallery entries={gallery} activeId={activeId} onSelect={handleSelect} onDelete={handleDelete} />
       </aside>
 
