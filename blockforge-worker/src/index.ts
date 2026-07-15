@@ -454,16 +454,14 @@ const CACHE_TTL_MS = 5 * 60 * 1000; // 5 minutes
 
 app.post('/design', async (c) => {
   const startTime = Date.now();
-  const apiKey = c.env.MISTRAL_API_KEY;
-  if (!apiKey) {
-    recordMetrics(false, Date.now() - startTime);
-    return c.json({ error: 'Configuration Error: Missing API Key' }, 500);
-  }
 
   try {
     const body = await c.req.json();
     const description: string = typeof body.description === 'string' ? body.description.trim() : '';
     const material: string = typeof body.material === 'string' ? body.material.trim() : '';
+    const size: string = typeof body.size === 'string' ? body.size.trim() : '';
+    const color: string = typeof body.color === 'string' ? body.color.trim() : '';
+    const features: string = typeof body.features === 'string' ? body.features.trim() : '';
     const source: string = typeof body.source === 'string' && body.source.trim() ? body.source.trim().slice(0, 40) : 'unknown';
 
     if (!description) {
@@ -549,7 +547,13 @@ app.post('/design', async (c) => {
     }
 
     if (!llmText.trim()) {
-      return c.json({ error: 'All LLM providers failed to generate a design' }, 502);
+      // All LLM providers failed — fall back to procedural mesh generation
+      const proceduralSpec = generateProceduralMesh(description, body.size, body.color, body.material, body.features);
+      if (!proceduralSpec) {
+        return c.json({ error: 'All LLM providers failed and procedural fallback generated no result' }, 502);
+      }
+      recordMetrics(true, Date.now() - startTime);
+      return c.json({ spec: proceduralSpec, source: 'procedural' });
     }
 
     const parsed = extractJson(llmText);
@@ -596,5 +600,57 @@ app.post('/design', async (c) => {
     return c.json({ error: `Design Error: ${err.message}` }, 500);
   }
 });
+
+/**
+ * Procedural mesh generator — fallback when no LLM provider is available.
+ * Supports any size/color/material/texture combination.
+ */
+function generateProceduralMesh(description: string, size?: string, color?: string, material?: string, features?: string): any {
+  const desc = description.toLowerCase();
+  const colorVal = color || '#8899aa';
+  let w = 1.0, h = 1.0, d = 1.0;
+  if (size) { const p = size.split(/[x×*]/).map(s => parseFloat(s.trim())).filter(n => !isNaN(n)); if (p.length >= 2) { w = p[0]; d = p[1]; } if (p.length >= 3) h = p[2]; }
+  const hm = desc.match(/(\d+\.?\d*)\s*m?\s*(high|tall|height)/); if (hm) h = parseFloat(hm[1]);
+  const wm = desc.match(/(\d+\.?\d*)\s*m?\s*(wide|width)/); if (wm) w = parseFloat(wm[1]);
+  const dm = desc.match(/(\d+\.?\d*)\s*m?\s*(deep|depth|thick)/); if (dm) d = parseFloat(dm[1]);
+  w = Math.max(0.1, Math.min(8, w)); h = Math.max(0.1, Math.min(8, h)); d = Math.max(0.05, Math.min(4, d));
+  const hasTex = features?.includes('textured') || ['brick','stone','wood','concrete','metal'].includes((material||'').toLowerCase());
+  const ml = (material||'').toLowerCase();
+  let r = 0.6, m = 0.1;
+  if (['brick','stone','concrete'].includes(ml)) { r=0.85; m=0.05; } else if (['wood','timber'].includes(ml)) { r=0.75; m=0.03; } else if (['metal','steel','iron'].includes(ml)) { r=0.2; m=0.9; } else if (['glass'].includes(ml)) { r=0.05; m=0.1; }
+  let parts: any[] = [];
+  if (desc.includes('wall')) {
+    parts = [{ geometry: 'box', args: [w, h, d], position: [0, h/2, 0], rotation: [0,0,0], material: { color: colorVal, roughness: r, metalness: m } }];
+    if (features?.includes('hollow')) parts.push({ geometry: 'box', args: [w*0.4, h*0.4, d*0.6], position: [0, h*0.5, d*0.3], rotation: [0,0,0], material: { color: '#1a1a2e', roughness: 0.1, metalness: 0 } });
+  } else if (desc.includes('roof') || desc.includes('slab')) {
+    parts = [{ geometry: 'box', args: [w, d, h*0.15], position: [0, h*0.075, 0], rotation: [0,0,0], material: { color: colorVal, roughness: r, metalness: m } }];
+  } else if (desc.includes('door') || desc.includes('entry')) {
+    parts = [
+      { geometry: 'box', args: [w*0.7, h, d*0.1], position: [0, h/2, 0], rotation: [0,0,0], material: { color: colorVal, roughness: 0.7, metalness: 0.05 } },
+      { geometry: 'cylinder', args: [0.03,0.03,0.15,8], position: [w*0.25, h*0.5, d*0.08], rotation: [0,0,Math.PI/2], material: { color: '#d4a373', roughness: 0.3, metalness: 0.7 } },
+    ];
+  } else if (desc.includes('column') || desc.includes('pillar')) {
+    parts = [{ geometry: 'cylinder', args: [d/2, d/2, h, 12], position: [0, h/2, 0], rotation: [0,0,0], material: { color: colorVal, roughness: r, metalness: m } }];
+  } else if (desc.includes('tower')) {
+    parts = [
+      { geometry: 'cylinder', args: [d/2, d*0.7, h, 8], position: [0, h/2, 0], rotation: [0,0,0], material: { color: colorVal, roughness: r, metalness: m } },
+      { geometry: 'box', args: [w*1.2, 0.1, d*1.2], position: [0, h, 0], rotation: [0,0,0], material: { color: '#555', roughness: 0.6, metalness: 0.3 } },
+    ];
+  } else if (desc.includes('fence') || desc.includes('railing')) {
+    const np = Math.max(2, Math.floor(w / 0.5));
+    for (let i = 0; i < np; i++) parts.push({ geometry: 'box', args: [0.05, h, 0.05], position: [-w/2+(w/(np-1))*i, h/2, 0], rotation: [0,0,0], material: { color: colorVal, roughness: r, metalness: m } });
+    parts.push({ geometry: 'box', args: [w, 0.03, 0.03], position: [0, h*0.7, 0], rotation: [0,0,0], material: { color: colorVal, roughness: r, metalness: m } });
+    parts.push({ geometry: 'box', args: [w, 0.03, 0.03], position: [0, h*0.3, 0], rotation: [0,0,0], material: { color: colorVal, roughness: r, metalness: m } });
+  } else {
+    parts = [{ geometry: 'box', args: [w, h, d], position: [0, h/2, 0], rotation: [0,0,0], material: { color: colorVal, roughness: r, metalness: m } }];
+  }
+  if (hasTex) {
+    const tex: Record<string,string> = { brick:'https://ambientcg.com/get?id=Bricks076_2K-JPG', stone:'https://ambientcg.com/get?id=Rock034_2K-JPG', wood:'https://ambientcg.com/get?id=Wood052_2K-JPG', concrete:'https://ambientcg.com/get?id=Concrete020_2K-JPG', metal:'https://ambientcg.com/get?id=Metal032_2K-JPG' };
+    for (const p of parts) p.material.textureUrl = tex[ml] || tex.brick;
+  }
+  if (features?.includes('beveled')) for (const p of parts) p.material.roughness = Math.min(1, (p.material.roughness||0.5)+0.1);
+  if (features?.includes('embossed')) for (const p of parts) p.material.metalness = Math.min(1, (p.material.metalness||0)+0.15);
+  return { objectName: description.slice(0,80), materialResearch: `${material||'Standard'} (r${r.toFixed(2)}/m${m.toFixed(2)})${hasTex?' textured':''}.`, parts };
+}
 
 export default app;
