@@ -67,6 +67,8 @@ export default function App() {
   const [viewerMaximized, setViewerMaximized] = useState(false);
   const [gallery, setGallery] = useState<GalleryEntry[]>([]);
   const [agentActivity, setAgentActivity] = useState<{ source: string; description: string; created_at: string } | null>(null);
+  const [agentDesigns, setAgentDesigns] = useState<GalleryEntry[]>([]);
+  const [activeAgentDesignId, setActiveAgentDesignId] = useState<string | null>(null);
 
   const polyHavenCount = assetResults.filter((result) => result.source === 'polyhaven').length;
   const ambientCGCount = assetResults.filter((result) => result.source === 'ambientcg').length;
@@ -83,20 +85,51 @@ export default function App() {
   // tool" indicator. Only surfaces activity from the last 15 seconds.
   useEffect(() => {
     const proxyUrl = import.meta.env.VITE_PROXY_URL as string | undefined;
-    const activityUrl = proxyUrl
-      ? proxyUrl.replace(/\/v1\/chat\/completions$/, '/agent-activity')
-      : 'https://blockforge.yusufsamodien12.workers.dev/agent-activity';
+    const baseUrl = proxyUrl
+      ? proxyUrl.replace(/\/v1\/chat\/completions$/, '')
+      : 'https://blockforge.yusufsamodien12.workers.dev';
 
     let cancelled = false;
     async function poll() {
       try {
-        const resp = await fetch(activityUrl);
-        if (!resp.ok || cancelled) return;
-        const data: any = await resp.json();
-        const latest = data?.activity?.[0];
-        if (!latest || latest.source === 'unknown') return;
-        const ageMs = Date.now() - new Date(latest.created_at.replace(' ', 'T') + 'Z').getTime();
-        setAgentActivity(ageMs < 30000 ? latest : null);
+        const [activityResp, designsResp] = await Promise.all([
+          fetch(`${baseUrl}/agent-activity`),
+          fetch(`${baseUrl}/recent-designs`)
+        ]);
+
+        // Agent activity
+        if (activityResp.ok && !cancelled) {
+          const activityData: any = await activityResp.json();
+          const latest = activityData?.activity?.[0];
+          if (latest && latest.source !== 'unknown') {
+            const ageMs = Date.now() - new Date(latest.created_at.replace(' ', 'T') + 'Z').getTime();
+            setAgentActivity(ageMs < 30000 ? latest : null);
+          }
+        }
+
+        // Recent agent-created designs
+        if (designsResp.ok && !cancelled) {
+          const designsData: any = await designsResp.json();
+          const designs = designsData?.designs ?? [];
+          const mapped: GalleryEntry[] = designs
+            .filter((d: any) => d.spec && d.description)
+            .map((d: any) => {
+              let spec: CustomMeshSpec;
+              try {
+                spec = typeof d.spec === 'string' ? JSON.parse(d.spec) : d.spec;
+              } catch {
+                return null;
+              }
+              return {
+                id: `agent-${d.id}`,
+                prompt: d.description,
+                spec,
+                createdAt: new Date(d.created_at).getTime(),
+              };
+            })
+            .filter((e: any) => e !== null);
+          setAgentDesigns(mapped);
+        }
       } catch {
         // Non-fatal -- just skip this poll cycle.
       }
@@ -268,6 +301,18 @@ export default function App() {
           </div>
         )}
         <Gallery entries={gallery} activeId={activeId} onSelect={handleSelect} onDelete={handleDelete} />
+
+        {agentDesigns.length > 0 && (
+          <>
+            <div className="sidebar-section-label">Agent Creations</div>
+            <Gallery entries={agentDesigns} activeId={activeAgentDesignId} onSelect={(entry) => {
+              setSpec(entry.spec);
+              setActiveAgentDesignId(entry.id);
+              setActiveId(null);
+              setError(null);
+            }} onDelete={() => {}} />
+          </>
+        )}
       </aside>
 
       <main className="main">
@@ -344,9 +389,8 @@ export default function App() {
               <button
                 key={label}
                 className="quick-pick-chip"
-                disabled={!!agentActivity}
+                disabled={!!agentActivity || isLoading}
                 onClick={() => { setPrompt(label); handleGenerate(label); }}
-                disabled={isLoading}
               >
                 {label}
               </button>

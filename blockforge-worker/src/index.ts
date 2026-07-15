@@ -3,6 +3,9 @@ import { cors } from 'hono/cors';
 
 type Bindings = {
   MISTRAL_API_KEY: string;
+  COHERE_API_KEY: string;
+  CEREBRAS_API_KEY: string;
+  NIM_ENDPOINT?: string;
   DB: D1Database;
 };
 
@@ -28,6 +31,7 @@ app.get('/', (c) => {
       health: 'GET /',
       chat: 'POST /v1/chat/completions',
       design: 'POST /design',
+      recentDesigns: 'GET /recent-designs',
       agentActivity: 'GET /agent-activity',
       state: {
         get: 'GET /state',
@@ -100,14 +104,8 @@ async function logAgentActivity(db: D1Database, source: string, description: str
   }
 }
 
-// POST /v1/chat/completions - Generic Mistral proxy (unchanged behavior).
+// POST /v1/chat/completions - Generic proxy with fallback: Mistral → Cerebras → Cohere → NIM.
 app.post('/v1/chat/completions', async (c) => {
-  const apiKey = c.env.MISTRAL_API_KEY;
-  if (!apiKey) {
-    console.error('❌ MISTRAL_API_KEY not configured');
-    return c.json({ error: 'Configuration Error: Missing API Key' }, 500);
-  }
-
   try {
     const body = await c.req.json();
 
@@ -123,32 +121,172 @@ app.post('/v1/chat/completions', async (c) => {
       return c.json({ error: 'Invalid request format' }, 400);
     }
 
-    const model = body.model || 'mistral-large-latest';
     const temperature = body.temperature || 0.7;
     const maxTokens = body.max_tokens || 2000;
 
-    const response = await fetch('https://api.mistral.ai/v1/chat/completions', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        Authorization: `Bearer ${apiKey}`,
-      },
-      body: JSON.stringify({ model, messages, temperature, max_tokens: maxTokens }),
-    });
-
-    if (!response.ok) {
-      const errorData = await response.text();
-      console.error('❌ Mistral API error:', response.status, errorData);
-      return c.json({ error: `Mistral API Error: ${response.status}`, details: errorData }, 500);
+    const providers: { name: string; key: string | undefined; endpoint: string }[] = [
+      { name: 'Mistral', key: c.env.MISTRAL_API_KEY, endpoint: 'https://api.mistral.ai/v1/chat/completions' },
+      { name: 'Cerebras', key: c.env.CEREBRAS_API_KEY, endpoint: 'https://api.cerebras.ai/v1/chat/completions' },
+    ];
+    if (c.env.NIM_ENDPOINT) {
+      providers.push({ name: 'NVIDIA-NIM', key: '', endpoint: c.env.NIM_ENDPOINT });
     }
 
-    const data = await response.json();
-    return c.json(data, response.status as any);
+    for (const provider of providers) {
+      if (!provider.key && provider.name !== 'NVIDIA-NIM') continue;
+      try {
+        const model = provider.name === 'Mistral' ? (body.model || 'mistral-large-latest')
+          : provider.name === 'Cerebras' ? (body.model || 'cerebras-gpt-3.5-turbo')
+          : provider.name === 'NVIDIA-NIM' ? (body.model || 'meta/llama-3.1-70b-instruct')
+          : (body.model || 'mistral-large-latest');
+
+        const authKey = provider.name === 'NVIDIA-NIM' ? '' : provider.key;
+        const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+        if (authKey) headers.Authorization = `Bearer ${authKey}`;
+
+        const response = await fetch(provider.endpoint, {
+          method: 'POST',
+          headers,
+          body: JSON.stringify({ model, messages, temperature, max_tokens: maxTokens }),
+        });
+
+        if (!response.ok) {
+          const errorData = await response.text();
+          console.error(`❌ ${provider.name} error:`, response.status, errorData);
+          continue;
+        }
+
+        const data = await response.json();
+        return c.json(data, response.status as any);
+      } catch (err: any) {
+        console.error(`❌ ${provider.name} exception:`, err.message);
+      }
+    }
+
+    return c.json({ error: 'All providers failed to respond' }, 502);
   } catch (err: any) {
     console.error('❌ Proxy error:', err);
     return c.json({ error: `Proxy Error: ${err.message}` }, 500);
   }
 });
+
+// ─── Agent-created designs ──────────────────────────────────────────────────
+// Store generated specs so Blockforge's UI can display objects created by
+// the World-Agent (or any other client). Stored for 24 hours; older entries
+// are purged automatically on write.
+
+const DESIGN_TABLE = `
+  CREATE TABLE IF NOT EXISTS designs (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    source     TEXT NOT NULL DEFAULT 'unknown',
+    description TEXT NOT NULL,
+    spec       TEXT NOT NULL,
+    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+  )`;
+
+async function ensureDesignTable(db: D1Database): Promise<void> {
+  try {
+    await db.prepare(DESIGN_TABLE).run();
+  } catch {
+    // Table already exists — fine.
+  }
+}
+
+async function purgeOldDesigns(db: D1Database): Promise<void> {
+  try {
+    await db.prepare(
+      "DELETE FROM designs WHERE created_at < datetime('now', '-24 hours')"
+    ).run();
+  } catch {
+    // Non-fatal.
+  }
+}
+
+// GET /recent-designs — return up to 20 recent agent-created designs so the
+// BlockForge UI can display them.
+app.get('/recent-designs', async (c) => {
+  try {
+    await ensureDesignTable(c.env.DB);
+    const { results } = await c.env.DB.prepare(
+      'SELECT id, source, description, spec, created_at FROM designs ORDER BY id DESC LIMIT 20'
+    ).all();
+    return c.json({ designs: results ?? [] });
+  } catch (err: any) {
+    console.error('Recent Designs Fetch Error:', err);
+    return c.json({ error: `Recent Designs Fetch Error: ${err.message}` }, 500);
+  }
+});
+
+// ─── /metrics — API metrics ──────────────────────────────────────────────
+// Exposes request count, average latency, and error rate so the Blockforge UI
+// can show a live dashboard. Metrics reset after 15 minutes of inactivity.
+
+interface MetricsStore {
+  totalRequests: number;
+  successCount: number;
+  errorCount: number;
+  totalLatencyMs: number;
+  lastReset: number;
+}
+let metrics: MetricsStore = { totalRequests: 0, successCount: 0, errorCount: 0, totalLatencyMs: 0, lastReset: Date.now() };
+
+function recordMetrics(success: boolean, latencyMs: number): void {
+  const now = Date.now();
+  if (now - metrics.lastReset > 15 * 60 * 1000) {
+    metrics = { totalRequests: 0, successCount: 0, errorCount: 0, totalLatencyMs: 0, lastReset: now };
+  }
+  metrics.totalRequests++;
+  metrics.totalLatencyMs += latencyMs;
+  if (success) metrics.successCount++; else metrics.errorCount++;
+}
+
+app.get('/metrics', (c) => {
+  const avgLatency = metrics.totalRequests > 0 ? (metrics.totalLatencyMs / metrics.totalRequests).toFixed(1) : '0';
+  return c.json({
+    totalRequests: metrics.totalRequests,
+    successCount: metrics.successCount,
+    errorCount: metrics.errorCount,
+    avgLatencyMs: parseFloat(avgLatency),
+    uptimeMs: Date.now() - metrics.lastReset,
+  });
+});
+
+// ─── PolyHaven + ambientCG material search helpers ───────────────────────
+const POLYHAVEN_API = 'https://api.polyhaven.com';
+const AMBIENTCG_API = 'https://ambientcg.com/api/v1';
+
+interface MaterialSearchResult {
+  polyhaven: string[];
+  ambientcg: string[];
+}
+async function searchPolyHaven(query: string, limit = 5): Promise<string[]> {
+  try {
+    const url = `${POLYHAVEN_API}/textures?q=${encodeURIComponent(query)}&limit=${limit}`;
+    const resp = await fetch(url, { headers: { Accept: 'application/json' } });
+    if (!resp.ok) return [];
+    const data: any = await resp.json();
+    const assets = Array.isArray(data?.assets) ? data.assets : [];
+    return assets.slice(0, limit).map((a: any) => a?.name).filter((n: unknown): n is string => typeof n === 'string');
+  } catch {
+    return [];
+  }
+}
+async function searchAmbientCG(query: string, limit = 5): Promise<string[]> {
+  try {
+    const url = `${AMBIENTCG_API}/textures?query=${encodeURIComponent(query)}&limit=${limit}`;
+    const resp = await fetch(url, { headers: { Accept: 'application/json' } });
+    if (!resp.ok) return [];
+    const data: any = await resp.json();
+    const results = Array.isArray(data?.results) ? data.results : [];
+    return results.slice(0, limit).map((r: any) => r?.id || r?.slug).filter((id: unknown): id is string => typeof id === 'string');
+  } catch {
+    return [];
+  }
+}
+async function materialSearch(query: string): Promise<MaterialSearchResult> {
+  const [polyhaven, ambientcg] = await Promise.all([searchPolyHaven(query), searchAmbientCG(query)]);
+  return { polyhaven, ambientcg };
+}
 
 // ─── /design — BlockForge mesh generation ──────────────────────────────────
 // Called by the World26 agent (or any client) when it needs a CustomMeshSpec
@@ -158,57 +296,70 @@ app.post('/v1/chat/completions', async (c) => {
 // existing src/types.ts shape (objectName, materialResearch, parts[]).
 
 const DESIGN_SYSTEM_PROMPT = `
-You are BlockForge, a design engine. Given the name of an object (a
-building block, material, or everyday thing -- e.g. "brick", "wooden door",
-"egg", "stone wall", "roof tile"), you do two things before answering:
+You are BlockForge, an expert architectural design engine. You design realistic, proportional 3D building components (walls, roofs, doors, windows, foundations, columns, staircases, fences, chimneys, etc.) using geometric primitives.
 
-1. RESEARCH THE MATERIAL: what is this object actually made of in the real
-   world? Consider its composition, texture, and reflectivity.
+## Your Design Process
 
-2. RESEARCH THE SHAPE: what precise geometric primitives combine to form
-   this object's silhouette and proportions accurately? Use as few parts as
-   needed for a recognizable, precise shape -- prefer 1-4 parts for simple
-   objects, up to 10 for more complex ones.
+1. **Identify the building type** — is this a load-bearing wall? a gable roof? a window frame? a column? a brick? Match the type to real-world construction standards.
+2. **Use real-world dimensions** — a standard wall is 2.4-3m tall x 0.2-0.3m thick. A door is 0.8-1m wide x 2-2.2m tall. A standard brick is 0.2m x 0.1m x 0.07m. A roof tile is ~0.3m x 0.2m. A window is 0.6-1.2m wide x 0.8-1.5m tall.
+3. **Build architectural assemblies** — walls must have proper thickness. Roofs must overhang walls slightly. Doors must fit within a wall opening. Foundations must extend beyond walls. Use 4-12 parts for realism.
+4. **Use authentic materials** — bricks are rough, matte, reddish-brown with slight color variation. Glass is smooth, semi-transparent, reflective. Roof tiles are rough, dark, slightly overlapping. Wood is warm-brown with moderate roughness. Concrete is gray, matte, rough. Metal is smooth, reflective, silver/dark.
 
-Respond with STRICT JSON ONLY. No markdown, no commentary outside the JSON.
+## Vocabulary of Architectural Parts
+
+Use these known building patterns:
+- **Wall assembly**: main wall panel + corner trim + base trim + top plate. A 3m x 2.6m x 0.25m wall with trim.
+- **Gable roof**: left slope + right slope + ridge cap + eaves trim. Each slope at 30-45 degrees.
+- **Window**: frame (thin box) + glass (cylinder or thin box) + sill (thin ledge below).
+- **Door**: door slab + frame + handle (small cylinder) + threshold.
+- **Foundation**: concrete slab wider than wall footprint, stepped at edges.
+- **Column**: base + shaft + capital. Round or square.
+- **Staircase**: treads + risers + stringers. Each tread 0.3m deep x 0.15m high.
+- **Fence**: posts + rails + pickets evenly spaced.
+- **Chimney**: square shaft + cap + flue tile.
+
+## Response Format
+
+Respond with STRICT JSON ONLY.
 
 {
-  "objectName": "short canonical name for what you designed",
-  "materialResearch": "one or two sentences on the material(s) you chose and why",
+  "objectName": "descriptive name like 'brick-wall-assembly' or 'gable-roof-with-tiles'",
+  "materialResearch": "explain the real material, its texture, reflectivity, color, and why it fits this use",
   "parts": [
     {
       "geometry": "box" | "cylinder" | "cone" | "sphere" | "torus",
-      "args": [numbers -- see geometry arg order below],
-      "position": [x, y, z],
-      "rotation": [x, y, z],
+      "args": [numbers in Three.js order],
+      "position": [x, y, z] (local offset from base, y=0 is ground),
+      "rotation": [x, y, z] (radians),
       "material": {
         "color": "#rrggbb",
         "roughness": 0.0-1.0,
         "metalness": 0.0-1.0,
-        "emissive": "#rrggbb" (optional, omit if the object doesn't glow),
-        "emissiveIntensity": 0.0-3.0 (optional)
+        "emissive": "#rrggbb" (omit if not emissive),
+        "emissiveIntensity": 0.0-3.0
       }
     }
   ]
 }
 
-Geometry "args" order (Three.js constructor order):
+Geometry args order:
   box:      [width, height, depth]
   cylinder: [radiusTop, radiusBottom, height, radialSegments?]
   cone:     [radius, height, radialSegments?]
   sphere:   [radius, widthSegments?, heightSegments?]
   torus:    [radius, tube, radialSegments?, tubularSegments?]
 
-Rules:
-- "position" is a local offset in meters from the object's own base point.
-  Rest the object on the ground: its lowest point should sit at y = 0.
-- Keep every dimension between 0.02 and 8 meters.
-- Use 1 to 10 parts total.
-- Center the object roughly on the local x/z origin.
+## Critical Rules
+- Every dimension must be between 0.02 and 8 meters.
+- Use 4 to 12 parts for a complete building component.
+- "position" is a local offset from the object's base (lowest point at y=0).
+- Center the assembly roughly on local x/z origin.
+- Materials must be realistic for the given architectural type.
+- Use proper proportions: walls are thin and tall, roofs are wide and sloped, bricks are small and numerous.
 `.trim();
 
 const VALID_GEOMETRIES = ['box', 'cylinder', 'cone', 'sphere', 'torus'];
-const MAX_PARTS = 10;
+const MAX_PARTS = 12;
 const MIN_DIM = 0.02;
 const MAX_DIM = 8;
 const HEX_COLOR_RE = /^#[0-9a-fA-F]{6}$/;
@@ -233,15 +384,20 @@ function sanitizeVec3(value: unknown, fallback: [number, number, number]): [numb
 
 function extractJson(text: string): unknown {
   let cleaned = text.trim();
+  // Remove markdown code block fences (both ```json and ```)
   if (cleaned.includes('```')) {
     cleaned = cleaned.replace(/```[a-z]*\n?/gi, '').replace(/```/g, '').trim();
   }
+  // Strip any leading whitespace/newlines before {
   const start = cleaned.indexOf('{');
   const end = cleaned.lastIndexOf('}');
   if (start === -1 || end === -1 || end < start) {
     throw new Error('No JSON object found in model response');
   }
-  return JSON.parse(cleaned.slice(start, end + 1));
+  const jsonStr = cleaned.slice(start, end + 1);
+  // Repair broken JSON: trailing commas before ? or ]
+  const fixed = jsonStr.replace(/,\s*([}\]])/g, '$1');
+  return JSON.parse(fixed);
 }
 
 function sanitizeMeshSpec(raw: any, fallbackName: string) {
@@ -290,9 +446,17 @@ function sanitizeMeshSpec(raw: any, fallbackName: string) {
   };
 }
 
+// ─── /design cache ──────────────────────────────────────────────────────
+// Deduplicate identical /design requests so we don't hit Mistral rate limits.
+// Cache lives in-memory and expires after 5 minutes.
+const designCache = new Map<string, { spec: any; expiresAt: number }>();
+const CACHE_TTL_MS = 5 * 60 * 1000; // 5 minutes
+
 app.post('/design', async (c) => {
+  const startTime = Date.now();
   const apiKey = c.env.MISTRAL_API_KEY;
   if (!apiKey) {
+    recordMetrics(false, Date.now() - startTime);
     return c.json({ error: 'Configuration Error: Missing API Key' }, 500);
   }
 
@@ -306,44 +470,128 @@ app.post('/design', async (c) => {
       return c.json({ error: 'Missing required field: description' }, 400);
     }
 
+    // Check cache
+    const cacheKey = `${description}::${material}`;
+    const cached = designCache.get(cacheKey);
+    if (cached && cached.expiresAt > Date.now()) {
+      recordMetrics(true, Date.now() - startTime);
+      return c.json({ spec: cached.spec, cached: true });
+    }
+
     c.executionCtx.waitUntil(logAgentActivity(c.env.DB, source, description));
 
     const prompt = `Design a precise 3D mesh for: "${description}"${material ? ` (material hint: ${material})` : ''}`;
 
-    const response = await fetch('https://api.mistral.ai/v1/chat/completions', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        Authorization: `Bearer ${apiKey}`,
-      },
-      body: JSON.stringify({
-        model: 'mistral-large-latest',
-        messages: [
-          { role: 'system', content: DESIGN_SYSTEM_PROMPT },
-          { role: 'user', content: prompt },
-        ],
-        temperature: 0.6,
-        max_tokens: 1200,
-      }),
-    });
+    const messages = [
+      { role: 'system', content: DESIGN_SYSTEM_PROMPT },
+      { role: 'user', content: prompt },
+    ];
 
-    if (!response.ok) {
-      const errorData = await response.text();
-      console.error('❌ Mistral API error:', response.status, errorData);
-      return c.json({ error: `Mistral API Error: ${response.status}`, details: errorData }, 500);
+    // Try providers in order: Mistral → Cohere → Cerebras → NIM
+    let llmText = '';
+    const providers: { name: string; key: string | undefined; endpoint: string; format: 'openai' | 'cohere' }[] = [
+      { name: 'Mistral', key: c.env.MISTRAL_API_KEY, endpoint: 'https://api.mistral.ai/v1/chat/completions', format: 'openai' },
+      { name: 'Cohere', key: c.env.COHERE_API_KEY, endpoint: 'https://api.cohere.ai/v1/chat', format: 'cohere' },
+      { name: 'Cerebras', key: c.env.CEREBRAS_API_KEY, endpoint: 'https://api.cerebras.ai/v1/chat/completions', format: 'openai' },
+    ];
+    // Add NIM if configured
+    if (c.env.NIM_ENDPOINT) {
+      providers.push({ name: 'NVIDIA-NIM', key: '', endpoint: c.env.NIM_ENDPOINT, format: 'openai' });
     }
 
-    const data: any = await response.json();
-    const text: string = data.choices?.[0]?.message?.content ?? '';
-    const parsed = extractJson(text);
-    const spec = sanitizeMeshSpec(parsed, description);
+    for (const provider of providers) {
+      if (!provider.key && provider.name !== 'NVIDIA-NIM') continue;
+      try {
+        let body: any;
+        let headers: Record<string, string> = { 'Content-Type': 'application/json' };
+
+        if (provider.format === 'cohere') {
+          headers.Authorization = `Bearer ${provider.key}`;
+          body = {
+            model: 'command-r-plus',
+            message: messages.map(m => `${m.role}: ${m.content}`).join('\n'),
+            temperature: 0.6,
+            max_tokens: 2000,
+          };
+          const resp = await fetch(provider.endpoint, { method: 'POST', headers, body: JSON.stringify(body) });
+          if (!resp.ok) {
+            const err = await resp.text();
+            console.error(`❌ ${provider.name} error:`, resp.status, err);
+            continue;
+          }
+          const data: any = await resp.json();
+          llmText = data.text || (data.chat_history?.length ? data.chat_history[data.chat_history.length - 1].message : '') || '';
+        } else {
+          // OpenAI-compatible (Mistral, Cerebras, NIM)
+          headers.Authorization = `Bearer ${provider.key}`;
+          body = {
+            model: provider.name === 'NVIDIA-NIM' ? 'meta/llama-3.1-70b-instruct' : 'mistral-large-latest',
+            messages,
+            temperature: 0.6,
+            max_tokens: 2000,
+          };
+          const resp = await fetch(provider.endpoint, { method: 'POST', headers, body: JSON.stringify(body) });
+          if (!resp.ok) {
+            const err = await resp.text();
+            console.error(`❌ ${provider.name} error:`, resp.status, err);
+            continue;
+          }
+          const raw = await resp.text();
+          let data: any;
+          try { data = JSON.parse(raw); } catch { continue; }
+          llmText = data.choices?.[0]?.message?.content || '';
+        }
+
+        if (llmText.trim()) break; // Success — use this provider's output
+      } catch (err: any) {
+        console.error(`❌ ${provider.name} exception:`, err.message);
+      }
+    }
+
+    if (!llmText.trim()) {
+      return c.json({ error: 'All LLM providers failed to generate a design' }, 502);
+    }
+
+    const parsed = extractJson(llmText);
+    let spec = sanitizeMeshSpec(parsed, description);
+
+    if (spec) {
+      try {
+        const mats = await materialSearch(description);
+        (spec as any).materialSearch = mats;
+      } catch {
+        // Non-fatal.
+      }
+    }
 
     if (!spec) {
+      recordMetrics(false, Date.now() - startTime);
       return c.json({ error: 'Model response did not contain a usable mesh design' }, 502);
     }
 
+    recordMetrics(true, Date.now() - startTime);
+
+    // Cache the result
+    designCache.set(cacheKey, { spec, expiresAt: Date.now() + CACHE_TTL_MS });
+
+    // Store the spec in D1 so BlockForge's UI can display it.
+    c.executionCtx.waitUntil(
+      (async () => {
+        try {
+          await ensureDesignTable(c.env.DB);
+          await purgeOldDesigns(c.env.DB);
+          await c.env.DB.prepare(
+            'INSERT INTO designs (source, description, spec) VALUES (?, ?, ?)'
+          ).bind(source, description, JSON.stringify(spec)).run();
+        } catch (dbErr) {
+          console.error('Design storage error (non-fatal):', dbErr);
+        }
+      })()
+    );
+
     return c.json({ spec });
   } catch (err: any) {
+    recordMetrics(false, Date.now() - startTime);
     console.error('❌ Design error:', err);
     return c.json({ error: `Design Error: ${err.message}` }, 500);
   }
