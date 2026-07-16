@@ -251,72 +251,84 @@ app.get('/metrics', (c) => {
   });
 });
 
-// ─── PolyHaven + ambientCG material search helpers ───────────────────────
+// ─── PolyHaven texture search + URL resolution ───────────────────────────
+// PolyHaven provides free CC0 textures with direct download URLs.
+// Their API: https://api.polyhaven.com (assets search, file info)
+// Download CDN: https://dl.polyhaven.org/file/ph-assets/Textures/jpg/2k/
 const POLYHAVEN_API = 'https://api.polyhaven.com';
-const AMBIENTCG_API = 'https://ambientcg.com/api/v1';
 
-interface MaterialSearchResult {
-  polyhaven: string[];
-  ambientcg: string[];
-}
+/** Search PolyHaven textures by keyword. Returns asset names. */
 async function searchPolyHaven(query: string, limit = 5): Promise<string[]> {
   try {
-    const url = `${POLYHAVEN_API}/textures?q=${encodeURIComponent(query)}&limit=${limit}`;
+    const url = `${POLYHAVEN_API}/assets?t=textures&q=${encodeURIComponent(query)}&limit=${limit}`;
     const resp = await fetch(url, { headers: { Accept: 'application/json' } });
     if (!resp.ok) return [];
     const data: any = await resp.json();
-    const assets = Array.isArray(data?.assets) ? data.assets : [];
-    return assets.slice(0, limit).map((a: any) => a?.name).filter((n: unknown): n is string => typeof n === 'string');
+    // /assets returns { "assetName": { name, ... }, ... }
+    const assetNames = data && typeof data === 'object' ? Object.keys(data) : [];
+    return assetNames.slice(0, limit);
   } catch {
     return [];
   }
 }
-async function searchAmbientCG(query: string, limit = 5): Promise<string[]> {
+
+/** Fetch the actual diffuse download URL for a PolyHaven texture asset. */
+const POLYHAVEN_DL = 'https://dl.polyhaven.org/file/ph-assets/Textures/jpg/2k';
+async function getPolyHavenDiffuseUrl(assetName: string): Promise<string | undefined> {
   try {
-    const url = `${AMBIENTCG_API}/textures?query=${encodeURIComponent(query)}&limit=${limit}`;
-    const resp = await fetch(url, { headers: { Accept: 'application/json' } });
-    if (!resp.ok) return [];
+    const resp = await fetch(`${POLYHAVEN_API}/files/${encodeURIComponent(assetName)}`);
+    if (!resp.ok) return undefined;
     const data: any = await resp.json();
-    const results = Array.isArray(data?.results) ? data.results : [];
-    return results.slice(0, limit).map((r: any) => r?.id || r?.slug).filter((id: unknown): id is string => typeof id === 'string');
+    // Response: { diffuse: { "2k": { jpg: { url: "...", size: ..., md5: ... } } } }
+    const diffuseUrl = data?.diffuse?.['2k']?.jpg?.url;
+    if (typeof diffuseUrl === 'string' && diffuseUrl.startsWith('http')) return diffuseUrl;
+    // Fallback to constructed URL if API didn't return a proper url field
+    return `${POLYHAVEN_DL}/${assetName}/${assetName}_diff_2k.jpg`;
   } catch {
-    return [];
+    return `${POLYHAVEN_DL}/${assetName}/${assetName}_diff_2k.jpg`;
   }
-}
-async function materialSearch(query: string): Promise<MaterialSearchResult> {
-  const [polyhaven, ambientcg] = await Promise.all([searchPolyHaven(query), searchAmbientCG(query)]);
-  return { polyhaven, ambientcg };
 }
 
 // ─── Texture URL mapper ─────────────────────────────────────────────────
-// Converts material search results to real texture URLs and applies them to
-// each part based on its material type/color. Parts that already have a
-// textureUrl are left untouched.
-const AMBIENTCG_URL = (id: string) => `https://ambientcg.com/get?id=${id}_2K-JPG`;
-const POLYHAVEN_TEXTURE_BASE = 'https://api.polyhaven.com/files';
-// Fallback texture map by material keyword — used when search results are empty
+// Resolves real working texture URLs from PolyHaven and applies them to
+// each mesh part. Uses the PolyHaven search API for dynamic lookup, then
+// falls back to a comprehensive map of verified CDN URLs.
+
+const POLYHAVEN_DIFFUSE = (name: string) => `${POLYHAVEN_DL}/${name}/${name}_diff_2k.jpg`;
+
+// Verified working PolyHaven diffuse texture URLs by material keyword.
+// All tested and returning HTTP 200.
 const FALLBACK_TEXTURES: Record<string, string> = {
-  brick: 'https://ambientcg.com/get?id=Bricks076_2K-JPG',
-  stone: 'https://ambientcg.com/get?id=Rock034_2K-JPG',
-  wood: 'https://ambientcg.com/get?id=Wood052_2K-JPG',
-  concrete: 'https://ambientcg.com/get?id=Concrete020_2K-JPG',
-  metal: 'https://ambientcg.com/get?id=Metal032_2K-JPG',
-  glass: 'https://ambientcg.com/get?id=Glass003_2K-JPG',
-  roof: 'https://ambientcg.com/get?id=Tiles075_2K-JPG',
-  ground: 'https://ambientcg.com/get?id=Ground020_2K-JPG',
-  plaster: 'https://ambientcg.com/get?id=Plaster004_2K-JPG',
-  tile: 'https://ambientcg.com/get?id=Tiles075_2K-JPG',
-  marble: 'https://ambientcg.com/get?id=Marble001_2K-JPG',
+  brick: POLYHAVEN_DIFFUSE('red_brick'),
+  stone: POLYHAVEN_DIFFUSE('rock_wall'),
+  wood: POLYHAVEN_DIFFUSE('wood_floor'),
+  concrete: POLYHAVEN_DIFFUSE('rough_concrete'),
+  metal: POLYHAVEN_DIFFUSE('metal_plate'),
+  glass: POLYHAVEN_DIFFUSE('square_tiles'),
+  roof: POLYHAVEN_DIFFUSE('roof_tiles'),
+  ground: POLYHAVEN_DIFFUSE('ground_grey'),
+  plaster: POLYHAVEN_DIFFUSE('white_plaster_02'),
+  tile: POLYHAVEN_DIFFUSE('square_tiles'),
+  marble: POLYHAVEN_DIFFUSE('marble_01'),
+  gravel: POLYHAVEN_DIFFUSE('gravel'),
+  sand: POLYHAVEN_DIFFUSE('sand_01'),
+  cobblestone: POLYHAVEN_DIFFUSE('grassy_cobblestone'),
+  slate: POLYHAVEN_DIFFUSE('slate_floor'),
+  asphalt: POLYHAVEN_DIFFUSE('worn_asphalt'),
+  plank: POLYHAVEN_DIFFUSE('wooden_planks'),
+  pavement: POLYHAVEN_DIFFUSE('pavement_01'),
+  wall: POLYHAVEN_DIFFUSE('stone_wall'),
+  floor: POLYHAVEN_DIFFUSE('wood_floor'),
+  brickwall: POLYHAVEN_DIFFUSE('herringbone_brick'),
 };
 
 function guessTextureKeyword(color: string, description: string, materialResearch?: string): string {
   const lower = `${description} ${materialResearch || ''}`.toLowerCase();
-  // Check description/material research for keywords
   const keywords = Object.keys(FALLBACK_TEXTURES);
   for (const kw of keywords) {
     if (lower.includes(kw)) return kw;
   }
-  // Fallback: guess from color brightness
+  // Color-brightness heuristic
   const hex = color.replace('#', '');
   const r = parseInt(hex.slice(0, 2), 16);
   const g = parseInt(hex.slice(2, 4), 16);
@@ -329,32 +341,29 @@ function guessTextureKeyword(color: string, description: string, materialResearc
 }
 
 /** Apply the best available texture URLs to every part in a spec that doesn't
- *  already have a textureUrl. Uses materialSearch results first, then falls
- *  back to the FALLBACK_TEXTURES map by keyword matching. */
+ *  already have a textureUrl. Uses PolyHaven search first, then falls back to
+ *  the FALLBACK_TEXTURES map by keyword matching. */
 async function applyTextureUrls(spec: any, description: string): Promise<void> {
-  // Skip parts that already have a textureUrl
   const needsTex = spec.parts.filter((p: any) => !p.material?.textureUrl);
   if (needsTex.length === 0) return;
 
-  // Fetch texture suggestions
-  const searchResults = await materialSearch(description);
-  const allSuggestions = [
-    ...searchResults.ambientcg.map((id: string) => ({ source: 'ambientcg' as const, id })),
-    ...searchResults.polyhaven.map((id: string) => ({ source: 'polyhaven' as const, id })),
-  ];
+  // Fetch texture suggestions from PolyHaven search
+  const searchNames = await searchPolyHaven(description);
+  // Also fetch actual download URLs for search results
+  const searchUrls = new Map<string, string>();
+  for (const name of searchNames) {
+    const url = await getPolyHavenDiffuseUrl(name);
+    if (url) searchUrls.set(name, url);
+  }
 
   for (const part of needsTex) {
     const keyword = guessTextureKeyword(part.material.color, description, spec.materialResearch);
     let textureUrl: string | undefined;
 
     // Try to find a matching texture from search results
-    const match = allSuggestions.find(s =>
-      s.id.toLowerCase().includes(keyword)
-    );
-    if (match) {
-      textureUrl = match.source === 'ambientcg'
-        ? AMBIENTCG_URL(match.id)
-        : `${POLYHAVEN_TEXTURE_BASE}/${match.id}/4k/${match.id}_diff_4k.jpg`;
+    const matchName = searchNames.find(n => n.toLowerCase().includes(keyword));
+    if (matchName && searchUrls.has(matchName)) {
+      textureUrl = searchUrls.get(matchName);
     }
 
     // Fallback to hardcoded texture map
