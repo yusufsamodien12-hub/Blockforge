@@ -340,15 +340,41 @@ function guessTextureKeyword(color: string, description: string, materialResearc
   return 'brick';
 }
 
+/** Map geographic coordinates to regional architectural material hints */
+function getRegionMaterialHint(latLon: string): string {
+  try {
+    const [latStr] = latLon.split(',');
+    const lat = parseFloat(latStr);
+    if (isNaN(lat)) return '';
+    // Northern Europe: brick, timber, slate
+    if (lat > 55) return 'brick timber slate stone';
+    // Central Europe: stone, plaster, tile
+    if (lat > 45) return 'stone plaster tile brick';
+    // Mediterranean: plaster, tile, stone
+    if (lat > 35) return 'plaster tile stone marble';
+    // Tropics: concrete, thatch, wood
+    return 'concrete wood thatch';
+  } catch {
+    return '';
+  }
+}
+
 /** Apply the best available texture URLs to every part in a spec that doesn't
  *  already have a textureUrl. Uses PolyHaven search first, then falls back to
- *  the FALLBACK_TEXTURES map by keyword matching. */
-async function applyTextureUrls(spec: any, description: string): Promise<void> {
+ *  the FALLBACK_TEXTURES map by keyword matching.
+ *  @param region Optional geographic hint (e.g. "51.5,-0.1") for region-aware texture selection.
+ */
+async function applyTextureUrls(spec: any, description: string, region?: string): Promise<void> {
   const needsTex = spec.parts.filter((p: any) => !p.material?.textureUrl);
   if (needsTex.length === 0) return;
 
+  // Enhance search query with region-aware context
+  const searchQuery = region
+    ? `${description} ${getRegionMaterialHint(region)}`
+    : description;
+
   // Fetch texture suggestions from PolyHaven search
-  const searchNames = await searchPolyHaven(description);
+  const searchNames = await searchPolyHaven(searchQuery);
   // Also fetch actual download URLs for search results
   const searchUrls = new Map<string, string>();
   for (const name of searchNames) {
@@ -557,13 +583,18 @@ app.post('/design', async (c) => {
     const color: string = typeof body.color === 'string' ? body.color.trim() : '';
     const features: string = typeof body.features === 'string' ? body.features.trim() : '';
     const source: string = typeof body.source === 'string' && body.source.trim() ? body.source.trim().slice(0, 40) : 'unknown';
+    // Optional real-world location hint for architectural context
+    const location: { lat: number; lon: number } | undefined =
+      body.location && typeof body.location.lat === 'number' && typeof body.location.lon === 'number'
+        ? { lat: body.location.lat, lon: body.location.lon }
+        : undefined;
 
     if (!description) {
       return c.json({ error: 'Missing required field: description' }, 400);
     }
 
-    // Check cache
-    const cacheKey = `${description}::${material}`;
+    // Check cache (include location in cache key for regional variety)
+    const cacheKey = `${description}::${material}::${location ? `${location.lat.toFixed(1)},${location.lon.toFixed(1)}` : 'noloc'}`;
     const cached = designCache.get(cacheKey);
     if (cached && cached.expiresAt > Date.now()) {
       recordMetrics(true, Date.now() - startTime);
@@ -572,7 +603,10 @@ app.post('/design', async (c) => {
 
     c.executionCtx.waitUntil(logAgentActivity(c.env.DB, source, description));
 
-    const prompt = `Design a precise 3D mesh for: "${description}"${material ? ` (material hint: ${material})` : ''}`;
+    const locationHint = location
+      ? ` Location: [${location.lat.toFixed(2)}, ${location.lon.toFixed(2)}] — use architectural styles common to this region.`
+      : '';
+    const prompt = `Design a precise 3D mesh for: "${description}"${material ? ` (material hint: ${material})` : ''}${locationHint}`;
 
     const messages = [
       { role: 'system', content: DESIGN_SYSTEM_PROMPT },
@@ -662,7 +696,10 @@ app.post('/design', async (c) => {
 
     if (spec) {
       try {
-        await applyTextureUrls(spec, description);
+        const region = location
+          ? `${location.lat.toFixed(2)},${location.lon.toFixed(2)}`
+          : undefined;
+        await applyTextureUrls(spec, description, region);
       } catch {
         // Non-fatal — parts without textureUrl will render with flat colors.
       }
