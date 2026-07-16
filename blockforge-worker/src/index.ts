@@ -505,9 +505,16 @@ app.post('/design', async (c) => {
 
         if (provider.format === 'cohere') {
           headers.Authorization = `Bearer ${provider.key}`;
+          // Cohere /chat expects a single message string + optional chat_history
+          const userMsg = messages.find(m => m.role === 'user')?.content || messages[0]?.content || '';
+          const chatHistory = messages.slice(0, -1).map(m => ({
+            role: m.role === 'assistant' ? 'CHATBOT' : 'USER',
+            message: m.content,
+          }));
           body = {
             model: 'command-r-plus',
-            message: messages.map(m => `${m.role}: ${m.content}`).join('\n'),
+            message: userMsg,
+            chat_history: chatHistory.length > 0 ? chatHistory : undefined,
             temperature: 0.6,
             max_tokens: 2000,
           };
@@ -518,10 +525,10 @@ app.post('/design', async (c) => {
             continue;
           }
           const data: any = await resp.json();
-          llmText = data.text || (data.chat_history?.length ? data.chat_history[data.chat_history.length - 1].message : '') || '';
+          llmText = data.text || '';
         } else {
           // OpenAI-compatible (Mistral, Cerebras, NIM)
-          headers.Authorization = `Bearer ${provider.key}`;
+          if (provider.key) headers.Authorization = `Bearer ${provider.key}`;
           body = {
             model: provider.name === 'NVIDIA-NIM' ? 'meta/llama-3.1-70b-instruct' : 'mistral-large-latest',
             messages,
