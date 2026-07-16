@@ -288,6 +288,84 @@ async function materialSearch(query: string): Promise<MaterialSearchResult> {
   return { polyhaven, ambientcg };
 }
 
+// ─── Texture URL mapper ─────────────────────────────────────────────────
+// Converts material search results to real texture URLs and applies them to
+// each part based on its material type/color. Parts that already have a
+// textureUrl are left untouched.
+const AMBIENTCG_URL = (id: string) => `https://ambientcg.com/get?id=${id}_2K-JPG`;
+const POLYHAVEN_TEXTURE_BASE = 'https://api.polyhaven.com/files';
+// Fallback texture map by material keyword — used when search results are empty
+const FALLBACK_TEXTURES: Record<string, string> = {
+  brick: 'https://ambientcg.com/get?id=Bricks076_2K-JPG',
+  stone: 'https://ambientcg.com/get?id=Rock034_2K-JPG',
+  wood: 'https://ambientcg.com/get?id=Wood052_2K-JPG',
+  concrete: 'https://ambientcg.com/get?id=Concrete020_2K-JPG',
+  metal: 'https://ambientcg.com/get?id=Metal032_2K-JPG',
+  glass: 'https://ambientcg.com/get?id=Glass003_2K-JPG',
+  roof: 'https://ambientcg.com/get?id=Tiles075_2K-JPG',
+  ground: 'https://ambientcg.com/get?id=Ground020_2K-JPG',
+  plaster: 'https://ambientcg.com/get?id=Plaster004_2K-JPG',
+  tile: 'https://ambientcg.com/get?id=Tiles075_2K-JPG',
+  marble: 'https://ambientcg.com/get?id=Marble001_2K-JPG',
+};
+
+function guessTextureKeyword(color: string, description: string, materialResearch?: string): string {
+  const lower = `${description} ${materialResearch || ''}`.toLowerCase();
+  // Check description/material research for keywords
+  const keywords = Object.keys(FALLBACK_TEXTURES);
+  for (const kw of keywords) {
+    if (lower.includes(kw)) return kw;
+  }
+  // Fallback: guess from color brightness
+  const hex = color.replace('#', '');
+  const r = parseInt(hex.slice(0, 2), 16);
+  const g = parseInt(hex.slice(2, 4), 16);
+  const b = parseInt(hex.slice(4, 6), 16);
+  const brightness = (r * 0.299 + g * 0.587 + b * 0.114);
+  if (brightness > 200) return 'plaster';
+  if (brightness > 150) return 'concrete';
+  if (brightness > 80) return 'stone';
+  return 'brick';
+}
+
+/** Apply the best available texture URLs to every part in a spec that doesn't
+ *  already have a textureUrl. Uses materialSearch results first, then falls
+ *  back to the FALLBACK_TEXTURES map by keyword matching. */
+async function applyTextureUrls(spec: any, description: string): Promise<void> {
+  // Skip parts that already have a textureUrl
+  const needsTex = spec.parts.filter((p: any) => !p.material?.textureUrl);
+  if (needsTex.length === 0) return;
+
+  // Fetch texture suggestions
+  const searchResults = await materialSearch(description);
+  const allSuggestions = [
+    ...searchResults.ambientcg.map((id: string) => ({ source: 'ambientcg' as const, id })),
+    ...searchResults.polyhaven.map((id: string) => ({ source: 'polyhaven' as const, id })),
+  ];
+
+  for (const part of needsTex) {
+    const keyword = guessTextureKeyword(part.material.color, description, spec.materialResearch);
+    let textureUrl: string | undefined;
+
+    // Try to find a matching texture from search results
+    const match = allSuggestions.find(s =>
+      s.id.toLowerCase().includes(keyword)
+    );
+    if (match) {
+      textureUrl = match.source === 'ambientcg'
+        ? AMBIENTCG_URL(match.id)
+        : `${POLYHAVEN_TEXTURE_BASE}/${match.id}/4k/${match.id}_diff_4k.jpg`;
+    }
+
+    // Fallback to hardcoded texture map
+    if (!textureUrl) {
+      textureUrl = FALLBACK_TEXTURES[keyword] || FALLBACK_TEXTURES.brick;
+    }
+
+    part.material = { ...part.material, textureUrl };
+  }
+}
+
 // ─── /design — BlockForge mesh generation ──────────────────────────────────
 // Called by the World26 agent (or any client) when it needs a CustomMeshSpec
 // for an object that isn't one of the built-in world object types.
@@ -336,7 +414,8 @@ Respond with STRICT JSON ONLY.
         "roughness": 0.0-1.0,
         "metalness": 0.0-1.0,
         "emissive": "#rrggbb" (omit if not emissive),
-        "emissiveIntensity": 0.0-3.0
+        "emissiveIntensity": 0.0-3.0,
+        "textureUrl": "https://ambientcg.com/get?id=AssetName_2K-JPG" (optional — real texture URL from ambientCG or PolyHaven)
       }
     }
   ]
@@ -415,6 +494,11 @@ function sanitizeMeshSpec(raw: any, fallbackName: string) {
       const args = part.args.slice(0, 4).map((a: unknown) => clampFinite(a, MIN_DIM, MAX_DIM, 0.5));
       const material = part.material && typeof part.material === 'object' ? part.material : {};
 
+      // Preserve textureUrl if the LLM provided one OR if we assign one later
+      const textureUrl = typeof material.textureUrl === 'string' && material.textureUrl.trim()
+        ? material.textureUrl.trim()
+        : undefined;
+
       return {
         geometry: part.geometry,
         args,
@@ -428,6 +512,7 @@ function sanitizeMeshSpec(raw: any, fallbackName: string) {
           emissiveIntensity: material.emissiveIntensity !== undefined
             ? clampFinite(material.emissiveIntensity, 0, 3, 0.5)
             : undefined,
+          ...(textureUrl ? { textureUrl } : {}),
         },
       };
     })
@@ -568,10 +653,9 @@ app.post('/design', async (c) => {
 
     if (spec) {
       try {
-        const mats = await materialSearch(description);
-        (spec as any).materialSearch = mats;
+        await applyTextureUrls(spec, description);
       } catch {
-        // Non-fatal.
+        // Non-fatal — parts without textureUrl will render with flat colors.
       }
     }
 
@@ -652,8 +736,8 @@ function generateProceduralMesh(description: string, size?: string, color?: stri
     parts = [{ geometry: 'box', args: [w, h, d], position: [0, h/2, 0], rotation: [0,0,0], material: { color: colorVal, roughness: r, metalness: m } }];
   }
   if (hasTex) {
-    const tex: Record<string,string> = { brick:'https://ambientcg.com/get?id=Bricks076_2K-JPG', stone:'https://ambientcg.com/get?id=Rock034_2K-JPG', wood:'https://ambientcg.com/get?id=Wood052_2K-JPG', concrete:'https://ambientcg.com/get?id=Concrete020_2K-JPG', metal:'https://ambientcg.com/get?id=Metal032_2K-JPG' };
-    for (const p of parts) p.material.textureUrl = tex[ml] || tex.brick;
+    const texUrl = FALLBACK_TEXTURES[ml] || FALLBACK_TEXTURES.brick;
+    for (const p of parts) p.material.textureUrl = texUrl;
   }
   if (features?.includes('beveled')) for (const p of parts) p.material.roughness = Math.min(1, (p.material.roughness||0.5)+0.1);
   if (features?.includes('embossed')) for (const p of parts) p.material.metalness = Math.min(1, (p.material.metalness||0)+0.15);
