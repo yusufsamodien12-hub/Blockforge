@@ -6,11 +6,9 @@ export default defineConfig(({ mode }) => {
   const isProd = mode === 'production';
 
   return {
-    // NOTE: if you deploy this to a subpath (e.g. GitHub Pages project site
-    // at username.github.io/blockforge/), set this to '/blockforge/' for
-    // production builds. Leaving it as '/' will 404 all built assets on a
-    // subpath host -- this bit us on the sibling world26 project.
-    base: isProd ? '/blockforge/' : '/',
+    // For Vercel deployment the site is served from the root, not a subpath.
+    // Leave as '/' so assets resolve correctly.
+    base: '/',
     envPrefix: 'VITE_',
     server: {
       strictPort: true,
